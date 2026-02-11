@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'login_page.dart';
 
 class SignupPage extends StatefulWidget {
@@ -12,6 +14,70 @@ class _SignupPageState extends State<SignupPage> {
   final TextEditingController nameController = TextEditingController();
   final TextEditingController emailController = TextEditingController();
   final TextEditingController passwordController = TextEditingController();
+
+  bool isLoading = false;
+
+  // 🔹 SIGN UP FUNCTION (Firebase Auth)
+  Future<void> signUp() async {
+    if (emailController.text.isEmpty || passwordController.text.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text("Email and Password required")),
+      );
+      return;
+    }
+
+    setState(() => isLoading = true);
+
+    try {
+      UserCredential userCredential = await FirebaseAuth.instance.createUserWithEmailAndPassword(
+        email: emailController.text.trim(),
+        password: passwordController.text.trim(),
+      );
+
+      // Update Display Name
+      if (nameController.text.isNotEmpty) {
+        await userCredential.user?.updateDisplayName(nameController.text.trim());
+        await userCredential.user?.reload(); // Reload to ensure changes are reflected
+        
+        // Save user data to Firestore
+        await FirebaseFirestore.instance.collection('users').doc(userCredential.user!.uid).set({
+          'name': nameController.text.trim(),
+          'email': emailController.text.trim(),
+          'createdAt': FieldValue.serverTimestamp(),
+        });
+      }
+
+      print("✅ USER CREATED SUCCESSFULLY");
+
+      // Success -> Navigate to HomePage (User is now logged in)
+      if (mounted) {
+        Navigator.pushReplacement(
+          context,
+          MaterialPageRoute(builder: (_) => const LoginPage()), // Or HomePage if you want direct access
+        );
+      }
+    } on FirebaseAuthException catch (e) {
+      String message = "Signup failed";
+
+      if (e.code == 'email-already-in-use') {
+        message = "Email already registered";
+      } else if (e.code == 'weak-password') {
+        message = "Password too weak (min 6 chars)";
+      } else if (e.code == 'invalid-email') {
+        message = "Invalid email address";
+      }
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(message)),
+      );
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(e.toString())),
+      );
+    }
+
+    setState(() => isLoading = false);
+  }
 
   @override
   void dispose() {
@@ -33,7 +99,6 @@ class _SignupPageState extends State<SignupPage> {
         child: SingleChildScrollView(
           padding: const EdgeInsets.all(20),
           child: Column(
-            mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               TextField(
@@ -45,6 +110,7 @@ class _SignupPageState extends State<SignupPage> {
                 ),
               ),
               const SizedBox(height: 16),
+
               TextField(
                 controller: emailController,
                 keyboardType: TextInputType.emailAddress,
@@ -55,6 +121,7 @@ class _SignupPageState extends State<SignupPage> {
                 ),
               ),
               const SizedBox(height: 16),
+
               TextField(
                 controller: passwordController,
                 obscureText: true,
@@ -66,31 +133,28 @@ class _SignupPageState extends State<SignupPage> {
               ),
               const SizedBox(height: 24),
 
-              // SIGN UP BUTTON
+              // 🔹 SIGN UP BUTTON
               ElevatedButton(
-                onPressed: () {
-                  print('Name: ${nameController.text}');
-                  print('Email: ${emailController.text}');
-                  print('Password: ${passwordController.text}');
-                  // TODO: Add real sign-up logic
-                },
+                onPressed: isLoading ? null : signUp,
                 style: ElevatedButton.styleFrom(
                   backgroundColor: const Color(0xFF679f9e),
                   padding: const EdgeInsets.symmetric(vertical: 16),
                 ),
-                child: const Text('Sign Up'),
+                child: isLoading
+                    ? const CircularProgressIndicator(color: Colors.white)
+                    : const Text('Sign Up'),
               ),
 
               const SizedBox(height: 16),
 
-              // LOGIN REDIRECT FOR EXISTING ACCOUNTS
+              // LOGIN REDIRECT
               Center(
                 child: TextButton(
                   onPressed: () {
                     Navigator.push(
                       context,
                       MaterialPageRoute(
-                        builder: (context) => const LoginPage(),
+                        builder: (_) => const LoginPage(),
                       ),
                     );
                   },

@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "173142328853",
+    "project_id": "ovabloom-3cd26",
+    "storage_bucket": "ovabloom-3cd26.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:173142328853:android:28c5cc16e323216140701c",
+        "android_client_info": {
+          "package_name": "com.example.pcos_app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAIPK8omii82vC1wNPYS36I3x_hCx_ehmk"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
