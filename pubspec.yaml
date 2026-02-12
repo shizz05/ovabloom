@@ -18,6 +18,7 @@ dependencies:
   firebase_core: ^2.27.0
   firebase_auth: ^4.17.0
   cloud_firestore: ^4.15.8
+  video_player: ^2.8.6
 
 dev_dependencies:
   flutter_test:
@@ -28,4 +29,4 @@ flutter:
   uses-material-design: true
 
   assets:
-    - assets/logo.png
+    - assets/logo_video.mp4
