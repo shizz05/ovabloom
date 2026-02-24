@@ -1,9 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:firebase_auth/firebase_auth.dart';
 import 'package:video_player/video_player.dart';
-import 'signup_page.dart';
-import 'homepage.dart';
+import 'package:pcos_app/auth_gate.dart'; // Import AuthGate
 
 class LogoPage extends StatefulWidget {
   const LogoPage({super.key});
@@ -45,12 +43,11 @@ class _LogoPageState extends State<LogoPage> {
   void _navigateNext() {
     if (!mounted) return;
 
-    final user = FirebaseAuth.instance.currentUser;
-
+    // Navigate to the AuthGate instead of deciding here
     Navigator.pushReplacement(
       context,
       MaterialPageRoute(
-        builder: (_) => user != null ? const HomePage() : const SignupPage(),
+        builder: (_) => const AuthGate(),
       ),
     );
   }
