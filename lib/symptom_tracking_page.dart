@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:firebase_auth/firebase_auth.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:flutter/services.dart';
 
 // ── Pastel symptom palette ──────────────────────────────────────
@@ -24,7 +23,10 @@ class SymptomTrackingPage extends StatefulWidget {
 
 class _SymptomTrackingPageState extends State<SymptomTrackingPage>
     with TickerProviderStateMixin {
-  // ── Palette ─────────────────────────────────────────────────
+  // ── Supabase ─────────────────────────────────────────────────
+  final _supabase = Supabase.instance.client;
+
+  // ── Palette ──────────────────────────────────────────────────
   static const Color _bg = Color(0xFFFDF8F4);
   static const Color _textDark = Color(0xFF3C2F2F);
   static const Color _textMute = Color(0xFF9E8E8E);
@@ -35,54 +37,55 @@ class _SymptomTrackingPageState extends State<SymptomTrackingPage>
   static const Color _mint = Color(0xFF80CBB0);
   static const Color _butter = Color(0xFFE8C94F);
 
-  // ── State ────────────────────────────────────────────────────
+  // ── Symptom state ─────────────────────────────────────────────
   final Map<String, bool> _cycleSymptoms = {
-    "Bleeding": false,
-    "Spotting": false,
-    "Cramps": false,
-    "Pelvic Discomfort": false,
+    'Bleeding': false,
+    'Spotting': false,
+    'Cramps': false,
+    'Pelvic Discomfort': false,
   };
   final Map<String, bool> _energySymptoms = {
-    "Fatigue": false,
-    "Low Energy": false,
-    "Poor Sleep": false,
-    "Daytime Sleepiness": false,
+    'Fatigue': false,
+    'Low Energy': false,
+    'Poor Sleep': false,
+    'Daytime Sleepiness': false,
   };
   double _energyLevel = 3.0;
 
   final Map<String, bool> _moodSymptoms = {
-    "Mood Swings": false,
-    "Anxiety": false,
-    "Irritability": false,
-    "Low Mood": false,
-    "Brain Fog": false,
+    'Mood Swings': false,
+    'Anxiety': false,
+    'Irritability': false,
+    'Low Mood': false,
+    'Brain Fog': false,
   };
-  String _moodRating = "Neutral";
+  String _moodRating = 'Neutral';
 
   final Map<String, bool> _hormonalSymptoms = {
-    "Acne Flare-up": false,
-    "Oily Skin": false,
-    "Hair Fall": false,
-    "Excess Sweating": false,
+    'Acne Flare-up': false,
+    'Oily Skin': false,
+    'Hair Fall': false,
+    'Excess Sweating': false,
   };
   final Map<String, bool> _metabolicSymptoms = {
-    "Sugar Cravings": false,
-    "Extreme Hunger": false,
-    "Bloating": false,
-    "Energy Crash": false,
+    'Sugar Cravings': false,
+    'Extreme Hunger': false,
+    'Bloating': false,
+    'Energy Crash': false,
   };
-  String _cravingIntensity = "None";
+  String _cravingIntensity = 'None';
 
   final Map<String, bool> _digestiveSymptoms = {
-    "Constipation": false,
-    "Indigestion": false,
-    "Headache": false,
-    "Breast Tenderness": false,
+    'Constipation': false,
+    'Indigestion': false,
+    'Headache': false,
+    'Breast Tenderness': false,
   };
 
   bool _isLoading = false;
   bool _isSaving = false;
 
+  // ── Animations ────────────────────────────────────────────────
   late AnimationController _headerAnim;
   late Animation<double> _headerFade;
   late Animation<Offset> _headerSlide;
@@ -106,58 +109,64 @@ class _SymptomTrackingPageState extends State<SymptomTrackingPage>
     super.dispose();
   }
 
-  // ── Save ─────────────────────────────────────────────────────
+  // ════════════════════════════════════════════════════════════
+  //  SAVE — Supabase upsert
+  //
+  //  Table   : daily_logs
+  //  Columns : id, user_id (uuid), date (text "yyyy-MM-dd"),
+  //            cycle_pain (jsonb), energy_sleep (jsonb),
+  //            energy_level (float4), mood_mental (jsonb),
+  //            mood_rating (text), hormonal_skin (jsonb),
+  //            metabolic_appetite (jsonb), craving_intensity (text),
+  //            digestive_physical (jsonb),
+  //            created_at (timestamptz)
+  //
+  //  Upsert on (user_id, date) — one log per user per day.
+  //  Requires: UNIQUE constraint on (user_id, date).
+  // ════════════════════════════════════════════════════════════
+
   Future<void> _saveLog() async {
-    final user = FirebaseAuth.instance.currentUser;
+    final user = _supabase.auth.currentUser;
     if (user == null) return;
+
     setState(() => _isSaving = true);
+
     try {
       final now = DateTime.now();
+
+      // "yyyy-MM-dd" key used as the upsert discriminator
       final dateKey =
-          "${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}";
+          '${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}';
+
       final logData = {
-        "date": Timestamp.now(),
-        "cycle_pain": _cycleSymptoms.entries
-            .where((e) => e.value)
-            .map((e) => e.key)
-            .toList(),
-        "energy_sleep": _energySymptoms.entries
-            .where((e) => e.value)
-            .map((e) => e.key)
-            .toList(),
-        "energy_level": _energyLevel,
-        "mood_mental": _moodSymptoms.entries
-            .where((e) => e.value)
-            .map((e) => e.key)
-            .toList(),
-        "mood_rating": _moodRating,
-        "hormonal_skin": _hormonalSymptoms.entries
-            .where((e) => e.value)
-            .map((e) => e.key)
-            .toList(),
-        "metabolic_appetite": _metabolicSymptoms.entries
-            .where((e) => e.value)
-            .map((e) => e.key)
-            .toList(),
-        "craving_intensity": _cravingIntensity,
-        "digestive_physical": _digestiveSymptoms.entries
-            .where((e) => e.value)
-            .map((e) => e.key)
-            .toList(),
+        'user_id': user.id,
+        'date': dateKey, // replaces Firestore doc id + Timestamp
+        'cycle_pain': _selectedKeys(_cycleSymptoms),
+        'energy_sleep': _selectedKeys(_energySymptoms),
+        'energy_level': _energyLevel,
+        'mood_mental': _selectedKeys(_moodSymptoms),
+        'mood_rating': _moodRating,
+        'hormonal_skin': _selectedKeys(_hormonalSymptoms),
+        'metabolic_appetite': _selectedKeys(_metabolicSymptoms),
+        'craving_intensity': _cravingIntensity,
+        'digestive_physical': _selectedKeys(_digestiveSymptoms),
+        'created_at': now
+            .toUtc()
+            .toIso8601String(), // replaces FieldValue.serverTimestamp()
       };
-      await FirebaseFirestore.instance
-          .collection('users')
-          .doc(user.uid)
-          .collection('daily_logs')
-          .doc(dateKey)
-          .set(logData, SetOptions(merge: true));
+
+      // Upsert: inserts today's log or updates it if it already exists.
+      await _supabase
+          .from('daily_logs')
+          .upsert(logData, onConflict: 'user_id,date');
+
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: const Row(children: [
               Icon(Icons.favorite, color: Colors.white, size: 18),
               SizedBox(width: 8),
-              Text("Daily log saved! 🌸"),
+              Text('Daily log saved! 🌸'),
             ]),
             backgroundColor: _rose,
             behavior: SnackBarBehavior.floating,
@@ -171,7 +180,7 @@ class _SymptomTrackingPageState extends State<SymptomTrackingPage>
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-              content: Text("Error: $e"), backgroundColor: Colors.redAccent),
+              content: Text('Error: $e'), backgroundColor: Colors.redAccent),
         );
       }
     } finally {
@@ -179,6 +188,13 @@ class _SymptomTrackingPageState extends State<SymptomTrackingPage>
     }
   }
 
+  // ── Extracts selected chip keys into a plain List<String> ──────
+  List<String> _selectedKeys(Map<String, bool> map) =>
+      map.entries.where((e) => e.value).map((e) => e.key).toList();
+
+  // ════════════════════════════════════════════════════════════
+  //  BUILD
+  // ════════════════════════════════════════════════════════════
   @override
   Widget build(BuildContext context) {
     final sw = MediaQuery.of(context).size.width;
@@ -219,7 +235,7 @@ class _SymptomTrackingPageState extends State<SymptomTrackingPage>
                   ),
                   const SizedBox(height: 28),
 
-                  // 1. Cycle & Body Pain
+                  // 1 · Cycle & Body Pain
                   _buildSection(
                     color: _rose,
                     icon: Icons.water_drop_rounded,
@@ -230,7 +246,7 @@ class _SymptomTrackingPageState extends State<SymptomTrackingPage>
                   ),
                   const SizedBox(height: 16),
 
-                  // 2. Energy & Sleep
+                  // 2 · Energy & Sleep
                   _buildSection(
                     color: _lavender,
                     icon: Icons.nights_stay_rounded,
@@ -248,7 +264,7 @@ class _SymptomTrackingPageState extends State<SymptomTrackingPage>
                   ),
                   const SizedBox(height: 16),
 
-                  // 3. Mood & Mental State
+                  // 3 · Mood & Mental State
                   _buildSection(
                     color: _sky,
                     icon: Icons.psychology_rounded,
@@ -265,7 +281,7 @@ class _SymptomTrackingPageState extends State<SymptomTrackingPage>
                   ),
                   const SizedBox(height: 16),
 
-                  // 4. Hormonal & Skin
+                  // 4 · Hormonal & Skin
                   _buildSection(
                     color: _peach,
                     icon: Icons.auto_awesome_rounded,
@@ -276,7 +292,7 @@ class _SymptomTrackingPageState extends State<SymptomTrackingPage>
                   ),
                   const SizedBox(height: 16),
 
-                  // 5. Metabolic & Appetite
+                  // 5 · Metabolic & Appetite
                   _buildSection(
                     color: _mint,
                     icon: Icons.restaurant_rounded,
@@ -294,7 +310,7 @@ class _SymptomTrackingPageState extends State<SymptomTrackingPage>
                   ),
                   const SizedBox(height: 16),
 
-                  // 6. Digestive & Physical
+                  // 6 · Digestive & Physical
                   _buildSection(
                     color: _butter,
                     icon: Icons.self_improvement_rounded,
@@ -314,10 +330,14 @@ class _SymptomTrackingPageState extends State<SymptomTrackingPage>
     );
   }
 
-  // ── Hero banner ──────────────────────────────────────────────
+  // ════════════════════════════════════════════════════════════
+  //  WIDGETS  (all identical to original — zero UI changes)
+  // ════════════════════════════════════════════════════════════
+
+  // ── Hero banner ───────────────────────────────────────────────
   Widget _buildHeroBanner() {
     final now = DateTime.now();
-    final months = [
+    const months = [
       'Jan',
       'Feb',
       'Mar',
@@ -329,16 +349,16 @@ class _SymptomTrackingPageState extends State<SymptomTrackingPage>
       'Sep',
       'Oct',
       'Nov',
-      'Dec'
+      'Dec',
     ];
-    final days = [
+    const days = [
       'Monday',
       'Tuesday',
       'Wednesday',
       'Thursday',
       'Friday',
       'Saturday',
-      'Sunday'
+      'Sunday',
     ];
     final dayName = days[now.weekday - 1];
     final dateStr = '${now.day} ${months[now.month - 1]}, ${now.year}';
@@ -367,9 +387,9 @@ class _SymptomTrackingPageState extends State<SymptomTrackingPage>
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(
+                const Text(
                   'Good day! 🌸',
-                  style: const TextStyle(
+                  style: TextStyle(
                     color: _textDark,
                     fontSize: 20,
                     fontWeight: FontWeight.w800,
@@ -402,7 +422,6 @@ class _SymptomTrackingPageState extends State<SymptomTrackingPage>
             ),
           ),
           const SizedBox(width: 12),
-          // Decorative circle illustration
           Container(
             width: 72,
             height: 72,
@@ -419,7 +438,7 @@ class _SymptomTrackingPageState extends State<SymptomTrackingPage>
     );
   }
 
-  // ── Section card ─────────────────────────────────────────────
+  // ── Section card ───────────────────────────────────────────────
   Widget _buildSection({
     required Color color,
     required IconData icon,
@@ -443,7 +462,6 @@ class _SymptomTrackingPageState extends State<SymptomTrackingPage>
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // Section header
           Container(
             padding: const EdgeInsets.fromLTRB(18, 16, 18, 14),
             decoration: BoxDecoration(
@@ -469,26 +487,22 @@ class _SymptomTrackingPageState extends State<SymptomTrackingPage>
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text(
-                        title,
-                        style: const TextStyle(
-                          color: _textDark,
-                          fontSize: 15,
-                          fontWeight: FontWeight.w800,
-                        ),
-                      ),
+                      Text(title,
+                          style: const TextStyle(
+                            color: _textDark,
+                            fontSize: 15,
+                            fontWeight: FontWeight.w800,
+                          )),
                       const SizedBox(height: 2),
-                      Text(
-                        subtitle,
-                        style: const TextStyle(color: _textMute, fontSize: 12),
-                      ),
+                      Text(subtitle,
+                          style:
+                              const TextStyle(color: _textMute, fontSize: 12)),
                     ],
                   ),
                 ),
               ],
             ),
           ),
-          // Section content
           Padding(
             padding: const EdgeInsets.all(16),
             child: child,
@@ -498,7 +512,7 @@ class _SymptomTrackingPageState extends State<SymptomTrackingPage>
     );
   }
 
-  // ── Chip group ───────────────────────────────────────────────
+  // ── Chip group ─────────────────────────────────────────────────
   Widget _buildChipGroup(Map<String, bool> symptoms, Color color) {
     return Wrap(
       spacing: 8,
@@ -545,9 +559,9 @@ class _SymptomTrackingPageState extends State<SymptomTrackingPage>
     );
   }
 
-  // ── Energy slider ────────────────────────────────────────────
+  // ── Energy slider ──────────────────────────────────────────────
   Widget _buildEnergySlider() {
-    final labels = ['', '😴', '😪', '😐', '😊', '⚡'];
+    const labels = ['', '😴', '😪', '😐', '😊', '⚡'];
     final level = _energyLevel.round();
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -566,10 +580,7 @@ class _SymptomTrackingPageState extends State<SymptomTrackingPage>
                 color: _lavender.withOpacity(0.18),
                 borderRadius: BorderRadius.circular(12),
               ),
-              child: Text(
-                labels[level],
-                style: const TextStyle(fontSize: 18),
-              ),
+              child: Text(labels[level], style: const TextStyle(fontSize: 18)),
             ),
           ],
         ),
@@ -611,7 +622,7 @@ class _SymptomTrackingPageState extends State<SymptomTrackingPage>
     );
   }
 
-  // ── Mood selector ────────────────────────────────────────────
+  // ── Mood selector ──────────────────────────────────────────────
   Widget _buildMoodSelector() {
     final moods = [
       {'label': 'Sad', 'emoji': '😢', 'value': 'Sad'},
@@ -663,7 +674,7 @@ class _SymptomTrackingPageState extends State<SymptomTrackingPage>
     );
   }
 
-  // ── Craving picker ───────────────────────────────────────────
+  // ── Craving picker ─────────────────────────────────────────────
   Widget _buildCravingPicker() {
     final options = [
       {'label': 'None', 'emoji': '🙅', 'value': 'None'},
@@ -725,7 +736,7 @@ class _SymptomTrackingPageState extends State<SymptomTrackingPage>
     );
   }
 
-  // ── Save button ──────────────────────────────────────────────
+  // ── Save button ────────────────────────────────────────────────
   Widget _buildSaveButton() {
     return GestureDetector(
       onTap: _isSaving ? null : _saveLog,

@@ -1,10 +1,10 @@
-import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:pcos_app/homepage.dart';
 import 'package:pcos_app/logo_page.dart';
 import 'package:pcos_app/providers/app_lock_provider.dart';
 import 'package:pcos_app/signup_page.dart';
-import 'package:pcos_app/view/chat/passcode/lock_screen.dart'; // Corrected import path
+import 'package:pcos_app/view/chat/passcode/lock_screen.dart';
 import 'package:provider/provider.dart';
 
 class AuthGate extends StatefulWidget {
@@ -21,7 +21,8 @@ class _AuthGateState extends State<AuthGate> {
   @override
   void initState() {
     super.initState();
-    // Wait for a few seconds and then hide the logo
+
+    // Splash delay
     Future.delayed(const Duration(seconds: 3), () {
       if (mounted) {
         setState(() {
@@ -38,23 +39,29 @@ class _AuthGateState extends State<AuthGate> {
     }
 
     final appLockProvider = context.watch<AppLockProvider>();
-    final user = FirebaseAuth.instance.currentUser;
+    final supabase = Supabase.instance.client;
 
-    // Determine the correct destination page based on Firebase auth status
-    final Widget destination =
-        user != null ? const HomePage() : const SignupPage();
+    return StreamBuilder<AuthState>(
+      stream: supabase.auth.onAuthStateChange,
+      builder: (context, snapshot) {
+        // Determine destination based on live Supabase auth state
+        final session = snapshot.data?.session;
+        final Widget destination =
+            session != null ? const HomePage() : const SignupPage();
 
-    // If app lock is disabled, or if the user has already unlocked, go to the destination
-    if (!appLockProvider.isAppLockEnabled || _isUnlocked) {
-      return destination;
-    }
+        // If app lock disabled OR already unlocked → go to destination
+        if (!appLockProvider.isAppLockEnabled || _isUnlocked) {
+          return destination;
+        }
 
-    // Otherwise, show the lock screen, which will lead to the destination upon success
-    return LockScreen(
-      onUnlock: () {
-        setState(() {
-          _isUnlocked = true;
-        });
+        // Otherwise show lock screen
+        return LockScreen(
+          onUnlock: () {
+            setState(() {
+              _isUnlocked = true;
+            });
+          },
+        );
       },
     );
   }

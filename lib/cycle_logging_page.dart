@@ -1,8 +1,7 @@
 import 'package:pcos_app/widgets/app_scaffold.dart';
 import 'dart:math';
 import 'package:flutter/material.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:firebase_auth/firebase_auth.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:intl/intl.dart';
 
 // ─────────────────────────────── DATA MODELS ──────────────────────────────────
@@ -16,12 +15,12 @@ class CycleData {
 
   int get periodLength => endDate.difference(startDate).inDays + 1;
 
-  factory CycleData.fromFirestore(DocumentSnapshot doc) {
-    final data = doc.data() as Map<String, dynamic>;
+  /// Construct from a Supabase row (Map<String, dynamic>)
+  factory CycleData.fromSupabase(Map<String, dynamic> row) {
     return CycleData(
-      id: doc.id,
-      startDate: (data['startDate'] as Timestamp).toDate(),
-      endDate: (data['endDate'] as Timestamp).toDate(),
+      id: row['id'].toString(),
+      startDate: DateTime.parse(row['start_date'] as String),
+      endDate: DateTime.parse(row['end_date'] as String),
     );
   }
 }
@@ -105,6 +104,9 @@ class CycleLoggingPage extends StatefulWidget {
 
 class _CycleLoggingPageState extends State<CycleLoggingPage>
     with SingleTickerProviderStateMixin {
+  // Supabase client
+  final _supabase = Supabase.instance.client;
+
   DateTime _selectedDate = DateTime.now();
   DateTime? _lastPeriodDate;
   bool _isLoading = true;
@@ -130,35 +132,38 @@ class _CycleLoggingPageState extends State<CycleLoggingPage>
     super.dispose();
   }
 
-  // ── DATA FETCHING ──────────────────────────────────────────────────────────
+  // ── DATA FETCHING (Supabase) ───────────────────────────────────────────────
 
   Future<void> _fetchCycleData() async {
-    final user = FirebaseAuth.instance.currentUser;
+    final user = _supabase.auth.currentUser;
     if (user == null) return;
     if (!mounted) return;
     setState(() => _isLoading = true);
 
     try {
-      final userDoc = await FirebaseFirestore.instance
-          .collection('users')
-          .doc(user.uid)
-          .get();
+      // Fetch last_period_date from users table
+      final userRow = await _supabase
+          .from('users')
+          .select('last_period_date')
+          .eq('id', user.id)
+          .maybeSingle();
 
       DateTime? currentCycleStart;
-      if (userDoc.exists && userDoc.data()!.containsKey('lastPeriodDate')) {
-        currentCycleStart = (userDoc['lastPeriodDate'] as Timestamp).toDate();
+      if (userRow != null && userRow['last_period_date'] != null) {
+        currentCycleStart =
+            DateTime.parse(userRow['last_period_date'] as String);
       }
 
-      final querySnapshot = await FirebaseFirestore.instance
-          .collection('users')
-          .doc(user.uid)
-          .collection('cycles')
-          .orderBy('startDate', descending: true)
-          .limit(4)
-          .get();
+      // Fetch last 4 cycles from cycles table, ordered by start_date descending
+      final cycleRows = await _supabase
+          .from('cycles')
+          .select()
+          .eq('user_id', user.id)
+          .order('start_date', ascending: false)
+          .limit(4);
 
-      final history = querySnapshot.docs
-          .map((doc) => CycleData.fromFirestore(doc))
+      final history = (cycleRows as List)
+          .map((row) => CycleData.fromSupabase(row as Map<String, dynamic>))
           .toList();
 
       if (!mounted) return;
@@ -177,14 +182,17 @@ class _CycleLoggingPageState extends State<CycleLoggingPage>
   }
 
   Future<void> _logPeriodStart() async {
-    final user = FirebaseAuth.instance.currentUser;
+    final user = _supabase.auth.currentUser;
     if (user == null) return;
     setState(() => _isLoading = true);
 
     try {
-      await FirebaseFirestore.instance.collection('users').doc(user.uid).set(
-          {'lastPeriodDate': Timestamp.fromDate(_selectedDate)},
-          SetOptions(merge: true));
+      // Upsert last_period_date in users table
+      await _supabase.from('users').upsert({
+        'id': user.id,
+        'last_period_date': _selectedDate.toIso8601String(),
+      });
+
       await _fetchCycleData();
       if (!mounted) return;
       _showSnack("Period start date logged! 🌸");
@@ -513,38 +521,43 @@ class _CycleLoggingPageState extends State<CycleLoggingPage>
     );
   }
 
+  /// Save cycle history to Supabase:
+  ///   1. Delete all existing cycles for this user.
+  ///   2. Insert the updated list.
   Future<void> _saveCycleHistory(List<CycleData> history) async {
-    final user = FirebaseAuth.instance.currentUser;
+    final user = _supabase.auth.currentUser;
     if (user == null) return;
     if (!mounted) return;
     setState(() => _isLoading = true);
 
     try {
-      final batch = FirebaseFirestore.instance.batch();
-      final collectionRef = FirebaseFirestore.instance
-          .collection('users')
-          .doc(user.uid)
-          .collection('cycles');
-
-      final existingDocs = await collectionRef.get();
-      for (var doc in existingDocs.docs) {
-        batch.delete(doc.reference);
-      }
-
-      for (var cycle in history) {
+      // Validate dates first
+      for (final cycle in history) {
         if (cycle.endDate.isBefore(cycle.startDate)) {
           if (!mounted) return;
           _showSnack("Error: End date cannot be before start date.",
               isError: true);
-          continue;
+          setState(() => _isLoading = false);
+          return;
         }
-        batch.set(collectionRef.doc(), {
-          'startDate': Timestamp.fromDate(cycle.startDate),
-          'endDate': Timestamp.fromDate(cycle.endDate),
-        });
       }
 
-      await batch.commit();
+      // Delete all existing cycles for this user
+      await _supabase.from('cycles').delete().eq('user_id', user.id);
+
+      // Insert updated cycles (skip if list is empty)
+      if (history.isNotEmpty) {
+        final rows = history
+            .map((cycle) => {
+                  'user_id': user.id,
+                  'start_date': cycle.startDate.toIso8601String(),
+                  'end_date': cycle.endDate.toIso8601String(),
+                })
+            .toList();
+
+        await _supabase.from('cycles').insert(rows);
+      }
+
       await _fetchCycleData();
     } catch (e) {
       if (!mounted) return;

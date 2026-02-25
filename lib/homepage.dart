@@ -1,8 +1,7 @@
 import 'dart:async';
 import 'dart:math';
 import 'package:flutter/material.dart';
-import 'package:firebase_auth/firebase_auth.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:pcos_app/widgets/app_scaffold.dart';
 import 'analytics_page.dart';
 import 'profile_settings_page.dart';
@@ -234,6 +233,9 @@ class HomePage extends StatefulWidget {
 class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
   final ScrollController _scrollController = ScrollController();
 
+  // Supabase client
+  final _supabase = Supabase.instance.client;
+
   DateTime _selectedDate = DateTime.now();
   DateTime? _lastPeriodDate;
   String? _userName;
@@ -296,7 +298,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
             parent: _cardSlideCtrl!, curve: Curves.easeOutCubic));
     _cardFade = CurvedAnimation(parent: _cardSlideCtrl!, curve: Curves.easeOut);
 
-    _currentUser = FirebaseAuth.instance.currentUser;
+    _currentUser = _supabase.auth.currentUser;
     _fetchUserData();
     _startQuoteTimer();
 
@@ -351,30 +353,30 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     });
   }
 
-  // ── DATA FETCH ─────────────────────────────────────────────────────────────
+  // ── DATA FETCH (Supabase) ──────────────────────────────────────────────────
 
   Future<void> _fetchUserData() async {
+    _currentUser = _supabase.auth.currentUser;
     if (_currentUser == null) return;
-    await _currentUser?.reload();
-    if (!mounted) return;
-    setState(() => _currentUser = FirebaseAuth.instance.currentUser);
 
     try {
-      final doc = await FirebaseFirestore.instance
-          .collection('users')
-          .doc(_currentUser!.uid)
-          .get();
-      if (doc.exists && mounted) {
-        final data = doc.data()!;
+      final data = await _supabase
+          .from('users')
+          .select('last_period_date, name, avatar_url')
+          .eq('id', _currentUser!.id)
+          .maybeSingle();
+
+      if (data != null && mounted) {
         setState(() {
-          if (data.containsKey('lastPeriodDate')) {
-            _lastPeriodDate = (data['lastPeriodDate'] as Timestamp).toDate();
+          if (data['last_period_date'] != null) {
+            _lastPeriodDate =
+                DateTime.parse(data['last_period_date'] as String);
           }
-          if (data.containsKey('name')) {
+          if (data['name'] != null) {
             _userName = data['name'] as String?;
           }
-          if (data.containsKey('avatarUrl')) {
-            _avatarUrl = data['avatarUrl'] as String?;
+          if (data['avatar_url'] != null) {
+            _avatarUrl = data['avatar_url'] as String?;
           }
         });
       }
@@ -503,10 +505,6 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
   }
 
   // ── GLUCOSE BOTTOM SHEET ───────────────────────────────────────────────────
-  // Opens a modal bottom sheet containing:
-  //   • reference range legend
-  //   • input + save button  →  writes to Firestore
-  //   • live list of last 5 readings from Firestore
 
   void _showGlucoseSheet() {
     showModalBottomSheet(
@@ -612,8 +610,6 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                   FadeTransition(opacity: cardFade, child: _buildSleepBanner()),
             ),
 
-            // ── Standalone Glucose Log section removed ────────────────────
-
             const SizedBox(height: 90),
           ],
         ),
@@ -624,7 +620,9 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
   // ── HEADER ─────────────────────────────────────────────────────────────────
 
   Widget _buildHeader() {
-    final displayName = _userName ?? _currentUser?.displayName ?? 'Beautiful';
+    final displayName = _userName ??
+        _currentUser?.userMetadata?['display_name'] as String? ??
+        'Beautiful';
 
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 4),
@@ -1218,7 +1216,6 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                       MaterialPageRoute(
                           builder: (_) => const SymptomTrackingPage())),
                 ),
-                // Glucose card → opens full bottom sheet with readings + add
                 _buildInsightCard(
                   imagePath: 'assets/glucose.png',
                   title: 'Glucose',
@@ -1411,8 +1408,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
 
 // ══════════════════════════════════════════════════════════════════════════════
 // GLUCOSE BOTTOM SHEET
-// All glucose functionality — readings list + add new reading.
-// Saves to Firestore: users/{uid}/glucoseReadings
+// Migrated: Firestore → Supabase (table: glucose_readings)
 // ══════════════════════════════════════════════════════════════════════════════
 
 class _GlucoseBottomSheet extends StatefulWidget {
@@ -1432,14 +1428,53 @@ class _GlucoseBottomSheet extends StatefulWidget {
 
 class _GlucoseBottomSheetState extends State<_GlucoseBottomSheet> {
   final TextEditingController _ctrl = TextEditingController();
+  final _supabase = Supabase.instance.client;
   String? _errorText;
   bool _isSaving = false;
+
+  // Holds the live readings fetched from Supabase
+  List<Map<String, dynamic>> _readings = [];
+  bool _loadingReadings = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _fetchReadings();
+  }
 
   @override
   void dispose() {
     _ctrl.dispose();
     super.dispose();
   }
+
+  // ── Fetch last 5 readings from Supabase ────────────────────────────────────
+
+  Future<void> _fetchReadings() async {
+    if (widget.currentUser == null) {
+      setState(() => _loadingReadings = false);
+      return;
+    }
+    try {
+      final data = await _supabase
+          .from('glucose_readings')
+          .select()
+          .eq('user_id', widget.currentUser!.id)
+          .order('created_at', ascending: false)
+          .limit(5);
+
+      if (mounted) {
+        setState(() {
+          _readings = List<Map<String, dynamic>>.from(data as List);
+          _loadingReadings = false;
+        });
+      }
+    } catch (_) {
+      if (mounted) setState(() => _loadingReadings = false);
+    }
+  }
+
+  // ── Save new reading to Supabase ───────────────────────────────────────────
 
   Future<void> _saveReading() async {
     final raw = _ctrl.text.trim();
@@ -1464,19 +1499,18 @@ class _GlucoseBottomSheetState extends State<_GlucoseBottomSheet> {
     });
 
     try {
-      await FirebaseFirestore.instance
-          .collection('users')
-          .doc(widget.currentUser!.uid)
-          .collection('glucoseReadings')
-          .add({
-        'userId': widget.currentUser!.uid,
+      await _supabase.from('glucose_readings').insert({
+        'user_id': widget.currentUser!.id,
         'value': parsed,
         'unit': 'mg/dL',
-        'timestamp': FieldValue.serverTimestamp(),
-        'loggedAt': DateTime.now().toIso8601String(),
+        'created_at': DateTime.now().toUtc().toIso8601String(),
       });
 
       _ctrl.clear();
+
+      // Refresh readings list after saving
+      await _fetchReadings();
+
       setState(() => _isSaving = false);
 
       final status = widget.getGlucoseStatus(parsed);
@@ -1523,10 +1557,7 @@ class _GlucoseBottomSheetState extends State<_GlucoseBottomSheet> {
         color: Colors.white,
         borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
       ),
-      // Max height shrinks when keyboard appears so nothing overflows
-      constraints: BoxConstraints(
-        maxHeight: screenHeight * 0.92,
-      ),
+      constraints: BoxConstraints(maxHeight: screenHeight * 0.92),
       child: SingleChildScrollView(
         physics: const BouncingScrollPhysics(),
         padding: EdgeInsets.fromLTRB(20, 0, 20, 20 + bottomPadding),
@@ -1736,127 +1767,109 @@ class _GlucoseBottomSheetState extends State<_GlucoseBottomSheet> {
                       style: TextStyle(color: HomeTheme.textMuted)),
                 ),
               )
-            else
-              StreamBuilder<QuerySnapshot>(
-                stream: FirebaseFirestore.instance
-                    .collection('users')
-                    .doc(widget.currentUser!.uid)
-                    .collection('glucoseReadings')
-                    .orderBy('timestamp', descending: true)
-                    .limit(5)
-                    .snapshots(),
-                builder: (context, snapshot) {
-                  if (snapshot.connectionState == ConnectionState.waiting) {
-                    return const Padding(
-                      padding: EdgeInsets.symmetric(vertical: 24),
-                      child: Center(child: CircularProgressIndicator()),
-                    );
-                  }
-
-                  if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
-                    return Padding(
-                      padding: const EdgeInsets.symmetric(vertical: 24),
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Icon(Icons.water_drop_outlined,
-                              color:
-                                  HomeTheme.glucoseBlue.withValues(alpha: 0.3),
-                              size: 40),
-                          const SizedBox(height: 10),
-                          const Text(
-                            'No readings yet',
-                            style: TextStyle(
-                                fontWeight: FontWeight.bold,
-                                color: HomeTheme.textPrimary,
-                                fontSize: 15),
-                          ),
-                          const SizedBox(height: 4),
-                          const Text(
-                            'Enter a value above to log your first reading',
-                            style: TextStyle(
-                                color: HomeTheme.textMuted, fontSize: 12),
-                            textAlign: TextAlign.center,
-                          ),
-                        ],
-                      ),
-                    );
-                  }
-
-                  final readings = snapshot.data!.docs;
-                  // NeverScrollableScrollPhysics because parent
-                  // SingleChildScrollView handles scrolling
-                  return ListView.separated(
-                    shrinkWrap: true,
-                    physics: const NeverScrollableScrollPhysics(),
-                    itemCount: readings.length,
-                    separatorBuilder: (_, __) => const Divider(
-                      height: 1,
-                      indent: 58,
-                      endIndent: 0,
-                      color: Color(0xFFF0F4F8),
+            else if (_loadingReadings)
+              const Padding(
+                padding: EdgeInsets.symmetric(vertical: 24),
+                child: Center(child: CircularProgressIndicator()),
+              )
+            else if (_readings.isEmpty)
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 24),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(Icons.water_drop_outlined,
+                        color: HomeTheme.glucoseBlue.withValues(alpha: 0.3),
+                        size: 40),
+                    const SizedBox(height: 10),
+                    const Text(
+                      'No readings yet',
+                      style: TextStyle(
+                          fontWeight: FontWeight.bold,
+                          color: HomeTheme.textPrimary,
+                          fontSize: 15),
                     ),
-                    itemBuilder: (context, index) {
-                      final data =
-                          readings[index].data() as Map<String, dynamic>;
-                      final value = (data['value'] as num?)?.toDouble() ?? 0.0;
-                      final unit = data['unit'] as String? ?? 'mg/dL';
-                      final ts = data['timestamp'];
-                      DateTime? time;
-                      if (ts is Timestamp) time = ts.toDate();
+                    const SizedBox(height: 4),
+                    const Text(
+                      'Enter a value above to log your first reading',
+                      style:
+                          TextStyle(color: HomeTheme.textMuted, fontSize: 12),
+                      textAlign: TextAlign.center,
+                    ),
+                  ],
+                ),
+              )
+            else
+              ListView.separated(
+                shrinkWrap: true,
+                physics: const NeverScrollableScrollPhysics(),
+                itemCount: _readings.length,
+                separatorBuilder: (_, __) => const Divider(
+                  height: 1,
+                  indent: 58,
+                  endIndent: 0,
+                  color: Color(0xFFF0F4F8),
+                ),
+                itemBuilder: (context, index) {
+                  final data = _readings[index];
+                  final value = (data['value'] as num?)?.toDouble() ?? 0.0;
+                  final unit = data['unit'] as String? ?? 'mg/dL';
+                  final tsRaw = data['created_at'];
+                  DateTime? time;
+                  if (tsRaw != null) {
+                    time = DateTime.tryParse(tsRaw as String)?.toLocal();
+                  }
 
-                      final status = widget.getGlucoseStatus(value);
-                      final statusColor = status['color'] as Color;
-                      final statusLabel = status['label'] as String;
+                  final status = widget.getGlucoseStatus(value);
+                  final statusColor = status['color'] as Color;
+                  final statusLabel = status['label'] as String;
 
-                      return ListTile(
-                        contentPadding: const EdgeInsets.symmetric(
-                            horizontal: 4, vertical: 4),
-                        leading: Container(
-                          width: 44,
-                          height: 44,
-                          decoration: BoxDecoration(
-                            color: statusColor.withValues(alpha: 0.12),
-                            borderRadius: BorderRadius.circular(12),
-                          ),
-                          child: Center(
-                            child: Text(status['icon'] as String,
-                                style: const TextStyle(fontSize: 20)),
-                          ),
+                  return ListTile(
+                    contentPadding:
+                        const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
+                    leading: Container(
+                      width: 44,
+                      height: 44,
+                      decoration: BoxDecoration(
+                        color: statusColor.withValues(alpha: 0.12),
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: Center(
+                        child: Text(status['icon'] as String,
+                            style: const TextStyle(fontSize: 20)),
+                      ),
+                    ),
+                    title: Text(
+                      '$value $unit',
+                      style: const TextStyle(
+                        fontWeight: FontWeight.bold,
+                        fontSize: 16,
+                        color: HomeTheme.textPrimary,
+                      ),
+                    ),
+                    subtitle: time != null
+                        ? Text(
+                            widget.formatDateTime(time),
+                            style: const TextStyle(
+                                color: HomeTheme.textMuted, fontSize: 12),
+                          )
+                        : null,
+                    trailing: Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 10, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: statusColor.withValues(alpha: 0.12),
+                        borderRadius: BorderRadius.circular(20),
+                      ),
+                      child: Text(
+                        statusLabel,
+                        style: TextStyle(
+                          color: statusColor,
+                          fontSize: 11,
+                          fontWeight: FontWeight.bold,
                         ),
-                        title: Text(
-                          '$value $unit',
-                          style: const TextStyle(
-                            fontWeight: FontWeight.bold,
-                            fontSize: 16,
-                            color: HomeTheme.textPrimary,
-                          ),
-                        ),
-                        subtitle: time != null
-                            ? Text(
-                                widget.formatDateTime(time),
-                                style: const TextStyle(
-                                    color: HomeTheme.textMuted, fontSize: 12),
-                              )
-                            : null,
-                        trailing: Container(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 10, vertical: 4),
-                          decoration: BoxDecoration(
-                            color: statusColor.withValues(alpha: 0.12),
-                            borderRadius: BorderRadius.circular(20),
-                          ),
-                          child: Text(
-                            statusLabel,
-                            style: TextStyle(
-                              color: statusColor,
-                              fontSize: 11,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                        ),
-                      );
-                    },
+                      ),
+                    ),
                   );
                 },
               ),

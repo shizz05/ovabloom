@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:firebase_auth/firebase_auth.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import 'login_page.dart';
 
 class SignupPage extends StatefulWidget {
@@ -17,7 +16,6 @@ class _SignupPageState extends State<SignupPage> {
 
   bool isLoading = false;
 
-  // 🔹 SIGN UP FUNCTION (Firebase Auth)
   Future<void> signUp() async {
     if (emailController.text.isEmpty || passwordController.text.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -28,55 +26,83 @@ class _SignupPageState extends State<SignupPage> {
 
     setState(() => isLoading = true);
 
+    final supabase = Supabase.instance.client;
+
     try {
-      UserCredential userCredential = await FirebaseAuth.instance.createUserWithEmailAndPassword(
+      // ── Step 1: Create auth user ──────────────────────────────────────
+      final response = await supabase.auth.signUp(
         email: emailController.text.trim(),
         password: passwordController.text.trim(),
+        data: {
+          'name': nameController.text.trim(),
+        },
       );
 
-      // Update Display Name
-      if (nameController.text.isNotEmpty) {
-        await userCredential.user?.updateDisplayName(nameController.text.trim());
-        await userCredential.user?.reload(); // Reload to ensure changes are reflected
-        
-        // Save user data to Firestore
-        await FirebaseFirestore.instance.collection('users').doc(userCredential.user!.uid).set({
-          'name': nameController.text.trim(),
-          'email': emailController.text.trim(),
-          'createdAt': FieldValue.serverTimestamp(),
-        });
+      if (response.user == null) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text("Signup failed. Please try again.")),
+          );
+        }
+        setState(() => isLoading = false);
+        return;
       }
 
-      print("✅ USER CREATED SUCCESSFULLY");
+      // ── Step 2: Insert into users table ──────────────────────────────
+      try {
+        await supabase.from('users').insert({
+          'id': response.user!.id,
+          'name': nameController.text.trim(),
+          'avatar_url': 'assets/avatars/1.png', // ✅ snake_case
+        });
+      } catch (insertError) {
+        debugPrint('Users table insert failed: $insertError');
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('Profile setup failed: $insertError'),
+              duration: const Duration(seconds: 6),
+            ),
+          );
+        }
+      }
 
-      // Success -> Navigate to HomePage (User is now logged in)
+      // ── Step 3: Navigate to login ─────────────────────────────────────
       if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text("Account created! Please log in."),
+            backgroundColor: Colors.green,
+          ),
+        );
         Navigator.pushReplacement(
           context,
-          MaterialPageRoute(builder: (_) => const LoginPage()), // Or HomePage if you want direct access
+          MaterialPageRoute(builder: (_) => const LoginPage()),
         );
       }
-    } on FirebaseAuthException catch (e) {
-      String message = "Signup failed";
+    } on AuthException catch (e) {
+      String message = e.message;
 
-      if (e.code == 'email-already-in-use') {
+      if (e.message.contains("already registered")) {
         message = "Email already registered";
-      } else if (e.code == 'weak-password') {
-        message = "Password too weak (min 6 chars)";
-      } else if (e.code == 'invalid-email') {
-        message = "Invalid email address";
+      } else if (e.message.contains("Password should be")) {
+        message = "Password must be at least 6 characters";
       }
 
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(message)),
-      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(message)),
+        );
+      }
     } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(e.toString())),
-      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text("Error: ${e.toString()}")),
+        );
+      }
     }
 
-    setState(() => isLoading = false);
+    if (mounted) setState(() => isLoading = false);
   }
 
   @override
@@ -110,7 +136,6 @@ class _SignupPageState extends State<SignupPage> {
                 ),
               ),
               const SizedBox(height: 16),
-
               TextField(
                 controller: emailController,
                 keyboardType: TextInputType.emailAddress,
@@ -121,7 +146,6 @@ class _SignupPageState extends State<SignupPage> {
                 ),
               ),
               const SizedBox(height: 16),
-
               TextField(
                 controller: passwordController,
                 obscureText: true,
@@ -132,8 +156,6 @@ class _SignupPageState extends State<SignupPage> {
                 ),
               ),
               const SizedBox(height: 24),
-
-              // 🔹 SIGN UP BUTTON
               ElevatedButton(
                 onPressed: isLoading ? null : signUp,
                 style: ElevatedButton.styleFrom(
@@ -144,18 +166,13 @@ class _SignupPageState extends State<SignupPage> {
                     ? const CircularProgressIndicator(color: Colors.white)
                     : const Text('Sign Up'),
               ),
-
               const SizedBox(height: 16),
-
-              // LOGIN REDIRECT
               Center(
                 child: TextButton(
                   onPressed: () {
                     Navigator.push(
                       context,
-                      MaterialPageRoute(
-                        builder: (_) => const LoginPage(),
-                      ),
+                      MaterialPageRoute(builder: (_) => const LoginPage()),
                     );
                   },
                   child: const Text(

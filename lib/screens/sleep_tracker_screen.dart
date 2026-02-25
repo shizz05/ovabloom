@@ -1,14 +1,13 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:fl_chart/fl_chart.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:firebase_auth/firebase_auth.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
 // ════════════════════════════════════════════════════════════════════
 //  SLEEP TRACKER SCREEN
-//  Firestore path : users/{uid}/sleep_hours/{auto-id}
-//  Fields saved   : hours (int), minutes (int),
-//                   date (String "yyyy-MM-dd"), timestamp (Timestamp)
+//  Supabase table : sleep_logs
+//  Columns        : id, user_id, hours (int), minutes (int),
+//                   date (text "yyyy-MM-dd"), created_at (timestamptz)
 // ════════════════════════════════════════════════════════════════════
 
 class SleepTrackerScreen extends StatefulWidget {
@@ -46,13 +45,9 @@ class _SleepTrackerScreenState extends State<SleepTrackerScreen>
   late final AnimationController _successAnim;
   late final Animation<double> _successScale;
 
-  // ── Firestore refs ───────────────────────────────────────────────
-  String get _uid => FirebaseAuth.instance.currentUser!.uid;
-
-  CollectionReference get _sleepCol => FirebaseFirestore.instance
-      .collection('users')
-      .doc(_uid)
-      .collection('sleep_hours');
+  // ── Supabase ─────────────────────────────────────────────────────
+  final _supabase = Supabase.instance.client;
+  String get _uid => _supabase.auth.currentUser!.id;
 
   // ── Lifecycle ────────────────────────────────────────────────────
   @override
@@ -86,34 +81,39 @@ class _SleepTrackerScreenState extends State<SleepTrackerScreen>
   }
 
   // ════════════════════════════════════════════════════════════════
-  //  FIRESTORE: fetch last 7 days & compute average
+  //  SUPABASE: fetch last 7 days & compute average
   // ════════════════════════════════════════════════════════════════
   Future<void> _loadWeeklyAvg() async {
     try {
-      final sevenDaysAgo = DateTime.now().subtract(const Duration(days: 7));
+      final sevenDaysAgo = DateTime.now()
+          .subtract(const Duration(days: 7))
+          .toUtc()
+          .toIso8601String();
 
-      final snap = await _sleepCol
-          .where('timestamp',
-              isGreaterThanOrEqualTo: Timestamp.fromDate(sevenDaysAgo))
-          .orderBy('timestamp', descending: true)
-          .get();
+      final rows = await _supabase
+          .from('sleep_logs')
+          .select('hours, minutes')
+          .eq('user_id', _uid)
+          .gte('created_at', sevenDaysAgo)
+          .order('created_at', ascending: false);
 
-      if (snap.docs.isEmpty) {
+      final list = rows as List;
+
+      if (list.isEmpty) {
         if (mounted) setState(() => _loadingAvg = false);
         return;
       }
 
       double total = 0;
-      for (final doc in snap.docs) {
-        final data = doc.data() as Map<String, dynamic>;
-        final h = (data['hours'] as num?)?.toDouble() ?? 0;
-        final m = (data['minutes'] as num?)?.toDouble() ?? 0;
+      for (final row in list) {
+        final h = (row['hours'] as num?)?.toDouble() ?? 0;
+        final m = (row['minutes'] as num?)?.toDouble() ?? 0;
         total += h + m / 60;
       }
 
       if (mounted) {
         setState(() {
-          _weeklyAvg = total / snap.docs.length;
+          _weeklyAvg = total / list.length;
           _loadingAvg = false;
         });
         _donutAnim.forward(from: 0);
@@ -122,7 +122,7 @@ class _SleepTrackerScreenState extends State<SleepTrackerScreen>
       if (mounted) {
         setState(() {
           _loadingAvg = false;
-          _errorMsg = 'Could not load data. Check Firestore rules.';
+          _errorMsg = 'Could not load data. Check Supabase RLS policies.';
         });
         debugPrint('Sleep fetch error: $e');
       }
@@ -130,7 +130,7 @@ class _SleepTrackerScreenState extends State<SleepTrackerScreen>
   }
 
   // ════════════════════════════════════════════════════════════════
-  //  FIRESTORE: save new entry
+  //  SUPABASE: save new entry
   // ════════════════════════════════════════════════════════════════
   Future<void> _saveSleep() async {
     if (!(_formKey.currentState?.validate() ?? false)) return;
@@ -149,12 +149,13 @@ class _SleepTrackerScreenState extends State<SleepTrackerScreen>
     });
 
     try {
-      // ── Write to Firestore ──────────────────────────────────────
-      await _sleepCol.add({
+      // ── Insert into Supabase ────────────────────────────────────
+      await _supabase.from('sleep_logs').insert({
+        'user_id': _uid,
         'hours': h,
         'minutes': m,
         'date': dateStr, // "2026-02-24"
-        'timestamp': FieldValue.serverTimestamp(), // for ordering / queries
+        'created_at': now.toUtc().toIso8601String(), // for ordering / queries
       });
 
       // Refresh weekly average
@@ -174,7 +175,7 @@ class _SleepTrackerScreenState extends State<SleepTrackerScreen>
       if (mounted) {
         setState(() {
           _isSaving = false;
-          _errorMsg = 'Save failed. Check Firestore rules.\n$e';
+          _errorMsg = 'Save failed. Check Supabase RLS policies.\n$e';
         });
         debugPrint('Sleep save error: $e');
       }
@@ -485,7 +486,7 @@ class _SleepTrackerScreenState extends State<SleepTrackerScreen>
                             color: Color(0xFF4CAF50), size: 18),
                         const SizedBox(width: 8),
                         Text(
-                          'Sleep logged & saved to Firestore!',
+                          'Sleep logged & saved to Supabase!',
                           style: TextStyle(
                             color: _textDark.withOpacity(0.75),
                             fontSize: 13,
@@ -533,7 +534,7 @@ class _SleepTrackerScreenState extends State<SleepTrackerScreen>
 }
 
 // ════════════════════════════════════════════════════════════════════
-//  INPUT FIELD WIDGET
+//  INPUT FIELD WIDGET  (unchanged)
 // ════════════════════════════════════════════════════════════════════
 class _InputField extends StatelessWidget {
   final TextEditingController controller;

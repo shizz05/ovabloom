@@ -1,30 +1,19 @@
 name: pcos_app
 description: A new Flutter project.
 
-
 publish_to: "none"
-
 
 version: 1.0.0+1
 
-
 environment:
   sdk: ">=3.0.0 <4.0.0"
-
 
 dependencies:
   flutter:
     sdk: flutter
 
-
   cupertino_icons: ^1.0.6
   flutter_svg: ^2.0.10+1
-
-
-  # 🔥 FIREBASE DEPENDENCIES
-  firebase_core: ^2.27.0
-  firebase_auth: ^4.17.0
-  cloud_firestore: ^4.15.8
   video_player: ^2.8.6
   flutter_cache_manager: ^3.3.1
   provider: ^6.0.0
@@ -35,16 +24,15 @@ dependencies:
   lottie: ^3.1.2
   fl_chart: ^0.68.0
   intl: ^0.19.0
+  supabase_flutter: ^2.12.0
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: ^3.0.1
 
-
 flutter:
   uses-material-design: true
-
 
   assets:
     - assets/avatars/

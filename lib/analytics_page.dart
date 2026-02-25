@@ -1,5 +1,4 @@
-import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:firebase_auth/firebase_auth.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import 'dart:math';
 import 'package:flutter/material.dart';
 
@@ -23,6 +22,8 @@ class AnalyticsPage extends StatefulWidget {
 
 class _AnalyticsPageState extends State<AnalyticsPage>
     with SingleTickerProviderStateMixin {
+  final _supabase = Supabase.instance.client;
+
   bool _isWeekly = true;
   Map<String, dynamic>? _scorecardData;
   bool _isLoading = true;
@@ -56,30 +57,39 @@ class _AnalyticsPageState extends State<AnalyticsPage>
     super.dispose();
   }
 
+  // ── FETCH SCORECARD (Supabase) ─────────────────────────────────
+  //
+  // Table: pcos_scorecard
+  // Columns: id, user_id, period (text: 'weekly' | 'monthly'),
+  //          wellness_score (int), metrics (jsonb), insights (jsonb)
+
   Future<void> _fetchScorecardData() async {
     setState(() => _isLoading = true);
-    final user = FirebaseAuth.instance.currentUser;
+
+    final user = _supabase.auth.currentUser;
     if (user == null) {
       setState(() => _isLoading = false);
       return;
     }
-    try {
-      final docId = _isWeekly ? 'weekly' : 'monthly';
-      final doc = await FirebaseFirestore.instance
-          .collection('users')
-          .doc(user.uid)
-          .collection('pcos_scorecard')
-          .doc(docId)
-          .get();
 
-      if (doc.exists) {
-        setState(() => _scorecardData = doc.data());
-        _animController.forward(from: 0);
+    try {
+      final period = _isWeekly ? 'weekly' : 'monthly';
+
+      final row = await _supabase
+          .from('pcos_scorecard')
+          .select('wellness_score, metrics, insights')
+          .eq('user_id', user.id)
+          .eq('period', period)
+          .maybeSingle();
+
+      if (mounted) {
+        setState(() => _scorecardData = row);
+        if (row != null) _animController.forward(from: 0);
       }
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text("Error fetching data: $e")),
+          SnackBar(content: Text('Error fetching data: $e')),
         );
       }
     } finally {
@@ -87,13 +97,18 @@ class _AnalyticsPageState extends State<AnalyticsPage>
     }
   }
 
+  // ── GENERATE SAMPLE DATA (Supabase upsert) ─────────────────────
+
   Future<void> _generateSampleData() async {
     setState(() => _isLoading = true);
-    final user = FirebaseAuth.instance.currentUser;
+
+    final user = _supabase.auth.currentUser;
     if (user == null) return;
 
     try {
       final weeklyData = {
+        'user_id': user.id,
+        'period': 'weekly',
         'wellness_score': 85,
         'metrics': {
           'sleep': {'score': 78},
@@ -106,12 +121,14 @@ class _AnalyticsPageState extends State<AnalyticsPage>
           'symptoms': {'score': 85},
         },
         'insights': [
-          "Your sleep consistency is great! Keep it up.",
-          "Consider adding some light exercise on days you feel stressed.",
+          'Your sleep consistency is great! Keep it up.',
+          'Consider adding some light exercise on days you feel stressed.',
         ],
       };
 
       final monthlyData = {
+        'user_id': user.id,
+        'period': 'monthly',
         'wellness_score': 78,
         'metrics': {
           'sleep': {'score': 82},
@@ -125,28 +142,29 @@ class _AnalyticsPageState extends State<AnalyticsPage>
         },
         'insights': [
           "You've shown great consistency with your cycle tracking this month.",
-          "Try to incorporate more relaxation techniques to manage stress levels.",
+          'Try to incorporate more relaxation techniques to manage stress levels.',
         ],
       };
 
-      final batch = FirebaseFirestore.instance.batch();
-      final userRef =
-          FirebaseFirestore.instance.collection('users').doc(user.uid);
-      batch.set(userRef.collection('pcos_scorecard').doc('weekly'), weeklyData);
-      batch.set(
-          userRef.collection('pcos_scorecard').doc('monthly'), monthlyData);
-      await batch.commit();
+      // Upsert both rows — onConflict targets (user_id, period) unique constraint
+      await _supabase.from('pcos_scorecard').upsert(
+        [weeklyData, monthlyData],
+        onConflict: 'user_id,period',
+      );
+
       await _fetchScorecardData();
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text("Error generating sample data: $e")),
+          SnackBar(content: Text('Error generating sample data: $e')),
         );
       }
     } finally {
       if (mounted) setState(() => _isLoading = false);
     }
   }
+
+  // ── BUILD ──────────────────────────────────────────────────────
 
   @override
   Widget build(BuildContext context) {
@@ -212,6 +230,7 @@ class _AnalyticsPageState extends State<AnalyticsPage>
   }
 
   // ── Toggle ─────────────────────────────────────────────────────
+
   Widget _buildToggle() {
     return Center(
       child: Container(
@@ -271,14 +290,14 @@ class _AnalyticsPageState extends State<AnalyticsPage>
   }
 
   // ── Score hero ─────────────────────────────────────────────────
+
   Widget _buildScoreHero(double sw) {
-    final score = _scorecardData?['wellness_score'] ?? 0;
+    final score = (_scorecardData?['wellness_score'] as num?)?.toInt() ?? 0;
     final circleSize = sw * 0.52;
 
     return Center(
       child: Column(
         children: [
-          // Gradient card behind circle
           Container(
             width: sw * 0.88,
             padding: const EdgeInsets.symmetric(vertical: 32),
@@ -344,7 +363,6 @@ class _AnalyticsPageState extends State<AnalyticsPage>
                   ],
                 ),
                 const SizedBox(height: 20),
-                // Score label badge
                 Container(
                   padding:
                       const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
@@ -376,6 +394,7 @@ class _AnalyticsPageState extends State<AnalyticsPage>
   }
 
   // ── Section label ──────────────────────────────────────────────
+
   Widget _buildSectionLabel(String text) {
     return Text(
       text,
@@ -389,7 +408,9 @@ class _AnalyticsPageState extends State<AnalyticsPage>
   }
 
   // ── Metrics grid ───────────────────────────────────────────────
+
   Widget _buildMetricsGrid(double sw) {
+    // metrics is stored as jsonb in Supabase — decoded as Map automatically
     final metrics = _scorecardData?['metrics'] as Map<String, dynamic>? ?? {};
 
     final items = [
@@ -404,13 +425,12 @@ class _AnalyticsPageState extends State<AnalyticsPage>
       _MetricItem(Icons.favorite_border, 'Heart Rate',
           metrics['heart_rate']?['score'], _primary),
       _MetricItem(Icons.directions_run, 'Activity',
-          metrics['activity']?['score'], Color(0xFFFFD580)),
+          metrics['activity']?['score'], const Color(0xFFFFD580)),
       _MetricItem(Icons.water_drop_outlined, 'Glucose',
           metrics['glucose']?['score'], _sky),
       _MetricItem(Icons.sync, 'Symptoms', metrics['symptoms']?['score'], _mint),
     ];
 
-    // Responsive: 2 columns on narrow, 4 on wide
     final cols = sw < 400 ? 2 : 4;
 
     return GridView.builder(
@@ -428,7 +448,7 @@ class _AnalyticsPageState extends State<AnalyticsPage>
   }
 
   Widget _buildMetricCard(_MetricItem item) {
-    final score = item.score ?? 0;
+    final score = (item.score as num?)?.toInt() ?? 0;
     return Container(
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
@@ -478,7 +498,6 @@ class _AnalyticsPageState extends State<AnalyticsPage>
             ),
           ),
           const SizedBox(height: 6),
-          // Mini progress bar
           ClipRRect(
             borderRadius: BorderRadius.circular(4),
             child: LinearProgressIndicator(
@@ -494,7 +513,9 @@ class _AnalyticsPageState extends State<AnalyticsPage>
   }
 
   // ── Insights ───────────────────────────────────────────────────
+
   Widget _buildInsights() {
+    // insights is stored as jsonb array in Supabase — decoded as List
     final insights =
         List<String>.from(_scorecardData?['insights'] as List<dynamic>? ?? []);
 
@@ -591,6 +612,7 @@ class _AnalyticsPageState extends State<AnalyticsPage>
   }
 
   // ── Empty state ────────────────────────────────────────────────
+
   Widget _buildEmptyState() {
     return Center(
       child: Padding(
@@ -657,6 +679,7 @@ class _AnalyticsPageState extends State<AnalyticsPage>
 }
 
 // ── Data model ─────────────────────────────────────────────────
+
 class _MetricItem {
   final IconData icon;
   final String title;
@@ -666,6 +689,7 @@ class _MetricItem {
 }
 
 // ── Custom painter ─────────────────────────────────────────────
+
 class ScoreCirclePainter extends CustomPainter {
   final int score;
   const ScoreCirclePainter({required this.score});
@@ -703,9 +727,9 @@ class ScoreCirclePainter extends CustomPainter {
       startAngle: -pi / 2,
       endAngle: 3 * pi / 2,
       colors: const [
-        Color(0xFFFFB3AE), // soft coral
-        Color(0xFFF28B82), // rose
-        Color(0xFFA8E6CF), // mint
+        Color(0xFFFFB3AE),
+        Color(0xFFF28B82),
+        Color(0xFFA8E6CF),
       ],
       stops: const [0.0, 0.5, 1.0],
     );
