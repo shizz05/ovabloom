@@ -9,20 +9,29 @@ import 'package:intl/intl.dart';
 class CycleData {
   final String id;
   final DateTime startDate;
-  final DateTime endDate;
+  final int
+      cycleLength; // stored integer — derived from consecutive start_dates
+  final int periodLength; // stored integer — optional, defaults to 5
 
-  CycleData({required this.id, required this.startDate, required this.endDate});
-
-  int get periodLength => endDate.difference(startDate).inDays + 1;
+  CycleData({
+    required this.id,
+    required this.startDate,
+    this.cycleLength = 28,
+    this.periodLength = 5,
+  });
 
   /// Construct from a Supabase row (Map<String, dynamic>)
   factory CycleData.fromSupabase(Map<String, dynamic> row) {
     return CycleData(
       id: row['id'].toString(),
       startDate: DateTime.parse(row['start_date'] as String),
-      endDate: DateTime.parse(row['end_date'] as String),
+      cycleLength: (row['cycle_length'] as num?)?.toInt() ?? 28,
+      periodLength: (row['period_length'] as num?)?.toInt() ?? 5,
     );
   }
+
+  /// Predicted next period start for this cycle
+  DateTime get predictedNextStart => startDate.add(Duration(days: cycleLength));
 }
 
 class CycleAnalysisResult {
@@ -104,7 +113,6 @@ class CycleLoggingPage extends StatefulWidget {
 
 class _CycleLoggingPageState extends State<CycleLoggingPage>
     with SingleTickerProviderStateMixin {
-  // Supabase client
   final _supabase = Supabase.instance.client;
 
   DateTime _selectedDate = DateTime.now();
@@ -114,6 +122,10 @@ class _CycleLoggingPageState extends State<CycleLoggingPage>
   CycleAnalysisResult? _analysisResult;
   late AnimationController _animController;
   late Animation<double> _fadeAnim;
+
+  // ── Flo-style constants ───────────────────────────────────────
+  static const int _minCycleLength = 15;
+  static const int _maxCycleLength = 60;
 
   @override
   void initState() {
@@ -132,8 +144,11 @@ class _CycleLoggingPageState extends State<CycleLoggingPage>
     super.dispose();
   }
 
-  // ── DATA FETCHING (Supabase) ───────────────────────────────────────────────
+  // ── DATA FETCHING ─────────────────────────────────────────────────────────
 
+  /// Fetches all cycles from the 'cycles' table ordered by start_date DESC.
+  /// Derives rolling cycle lengths dynamically from consecutive start_date
+  /// differences — exactly as Flo does.
   Future<void> _fetchCycleData() async {
     final user = _supabase.auth.currentUser;
     if (user == null) return;
@@ -141,36 +156,25 @@ class _CycleLoggingPageState extends State<CycleLoggingPage>
     setState(() => _isLoading = true);
 
     try {
-      // Fetch last_period_date from users table
-      final userRow = await _supabase
-          .from('users')
-          .select('last_period_date')
-          .eq('id', user.id)
-          .maybeSingle();
-
-      DateTime? currentCycleStart;
-      if (userRow != null && userRow['last_period_date'] != null) {
-        currentCycleStart =
-            DateTime.parse(userRow['last_period_date'] as String);
-      }
-
-      // Fetch last 4 cycles from cycles table, ordered by start_date descending
-      final cycleRows = await _supabase
+      final rows = await _supabase
           .from('cycles')
           .select()
           .eq('user_id', user.id)
-          .order('start_date', ascending: false)
-          .limit(4);
+          .order('start_date', ascending: false);
 
-      final history = (cycleRows as List)
+      final allCycles = (rows as List)
           .map((row) => CycleData.fromSupabase(row as Map<String, dynamic>))
           .toList();
 
+      // Show most recent 4 in the edit dialog
+      final recentHistory = allCycles.take(4).toList();
+
       if (!mounted) return;
       setState(() {
-        _lastPeriodDate = currentCycleStart;
-        _cycleHistory = history;
-        _analysisResult = _analyzeCycles(history, currentCycleStart);
+        _lastPeriodDate =
+            allCycles.isNotEmpty ? allCycles.first.startDate : null;
+        _cycleHistory = recentHistory;
+        _analysisResult = _analyzeCycles(allCycles);
         _isLoading = false;
       });
       _animController.forward(from: 0);
@@ -181,16 +185,93 @@ class _CycleLoggingPageState extends State<CycleLoggingPage>
     }
   }
 
+  // ── HELPER: Derive valid cycle lengths from sorted cycle list ─────────────
+
+  /// Given a list of cycles sorted by start_date DESC, derives realistic
+  /// cycle lengths by computing differences between consecutive start_dates.
+  /// Filters out values outside [_minCycleLength, _maxCycleLength].
+  ///
+  /// Returns lengths ordered from most recent to oldest.
+  List<int> _deriveCycleLengths(List<CycleData> cycles) {
+    if (cycles.length < 2) return [];
+
+    final lengths = <int>[];
+    for (int i = 0; i < cycles.length - 1; i++) {
+      // cycles[i] is newer, cycles[i+1] is older
+      final diff =
+          cycles[i].startDate.difference(cycles[i + 1].startDate).inDays;
+      if (diff >= _minCycleLength && diff <= _maxCycleLength) {
+        lengths.add(diff);
+      }
+    }
+    return lengths;
+  }
+
+  // ── HELPER: Weighted average (Flo-style) ─────────────────────────────────
+
+  /// Applies Flo-style weighted smoothing to derived cycle lengths.
+  /// Weights: most recent = 3, second = 2, third = 1.
+  /// Falls back to simple average if fewer than 3 valid lengths.
+  double _weightedAvgCycleLength(List<int> lengths) {
+    if (lengths.isEmpty) return 28.0;
+    if (lengths.length == 1) return lengths[0].toDouble();
+    if (lengths.length == 2) {
+      return (lengths[0] * 2 + lengths[1] * 1) / 3.0;
+    }
+    // Use only the 3 most recent for weighting
+    return (lengths[0] * 3 + lengths[1] * 2 + lengths[2] * 1) / 6.0;
+  }
+
+  // ── LOG PERIOD START ──────────────────────────────────────────────────────
+
+  /// Flo-style period logging:
+  ///   1. Fetch the most recent existing cycle.
+  ///   2. Derive the previous cycle length = new_start - last_start.
+  ///   3. Only store if length is between 15 and 60 days.
+  ///   4. Insert a new row — NEVER modify or delete previous rows.
   Future<void> _logPeriodStart() async {
     final user = _supabase.auth.currentUser;
     if (user == null) return;
     setState(() => _isLoading = true);
 
     try {
-      // Upsert last_period_date in users table
-      await _supabase.from('users').upsert({
-        'id': user.id,
-        'last_period_date': _selectedDate.toIso8601String(),
+      // Step 1: Fetch most recent cycle
+      final latestRow = await _supabase
+          .from('cycles')
+          .select()
+          .eq('user_id', user.id)
+          .order('start_date', ascending: false)
+          .limit(1)
+          .maybeSingle();
+
+      // Step 2: Derive cycle length from gap between start_dates
+      int derivedCycleLength = 28; // fallback only used if no prior cycle
+      int derivedPeriodLength = 5; // default period length
+
+      if (latestRow != null) {
+        final lastCycle =
+            CycleData.fromSupabase(latestRow as Map<String, dynamic>);
+        final gapDays = _selectedDate.difference(lastCycle.startDate).inDays;
+
+        // Step 3: Only use realistic gaps
+        if (gapDays >= _minCycleLength && gapDays <= _maxCycleLength) {
+          derivedCycleLength = gapDays;
+        } else if (gapDays > 0) {
+          // Gap exists but outside realistic range — keep prior stored value
+          // as the best available estimate rather than hardcoding 28
+          derivedCycleLength = lastCycle.cycleLength;
+        }
+        // Carry forward period_length from most recent cycle
+        derivedPeriodLength = lastCycle.periodLength;
+      }
+
+      // Step 4: Insert new cycle row — never touch previous rows
+      await _supabase.from('cycles').insert({
+        'user_id': user.id,
+        'start_date': DateFormat('yyyy-MM-dd').format(_selectedDate),
+        'cycle_length': derivedCycleLength,
+        'period_length': derivedPeriodLength,
+        'created_at': DateTime.now().toUtc().toIso8601String(),
       });
 
       await _fetchCycleData();
@@ -213,36 +294,52 @@ class _CycleLoggingPageState extends State<CycleLoggingPage>
     ));
   }
 
-  // ── ANALYSIS ──────────────────────────────────────────────────────────────
+  // ── ANALYSIS (Flo-style) ──────────────────────────────────────────────────
 
-  CycleAnalysisResult? _analyzeCycles(
-      List<CycleData> completedCycles, DateTime? currentCycleStartDate) {
-    if (completedCycles.length < 2) return null;
+  /// Flo-style cycle analysis:
+  ///
+  ///   1. Derive actual cycle lengths from consecutive start_date differences.
+  ///   2. Filter out unrealistic lengths (<15 or >60 days).
+  ///   3. Apply weighted smoothing on the last 3 valid lengths.
+  ///   4. Anchor all predictions to the most recent start_date.
+  ///
+  /// Predictions:
+  ///   next_period  = anchor + weighted_avg
+  ///   ovulation    = next_period - 14
+  ///   fertile_start = ovulation - 5
+  ///   fertile_end  = ovulation + 1
+  CycleAnalysisResult? _analyzeCycles(List<CycleData> allCycles) {
+    if (allCycles.isEmpty) return null;
 
-    List<int> cycleLengths = [];
-    for (int i = 0; i < completedCycles.length - 1; i++) {
-      cycleLengths.add(completedCycles[i]
-          .startDate
-          .difference(completedCycles[i + 1].startDate)
-          .inDays);
+    // Derive realistic cycle lengths from consecutive start_date differences
+    final derivedLengths = _deriveCycleLengths(allCycles);
+
+    // Need at least one derived length for meaningful analysis
+    // If we only have one logged cycle (no gap to measure), show a
+    // partial result anchored to that cycle's stored length as a seed.
+    final double weightedAvg;
+    final int variation;
+    final double avgPeriodLength;
+
+    if (derivedLengths.isEmpty) {
+      // Only one entry exists — use its stored cycle_length as the seed
+      weightedAvg = allCycles.first.cycleLength.toDouble();
+      variation = 0;
+    } else {
+      weightedAvg = _weightedAvgCycleLength(derivedLengths);
+      variation = derivedLengths.length > 1
+          ? derivedLengths.reduce(max) - derivedLengths.reduce(min)
+          : 0;
     }
-    if (cycleLengths.isEmpty) return null;
 
-    final periodLengths = completedCycles.map((c) => c.periodLength).toList();
-    double avgCycleLength =
-        cycleLengths.reduce((a, b) => a + b) / cycleLengths.length;
-    double avgPeriodLength =
+    // Average period length from stored values (period_length is user-reported)
+    final periodLengths = allCycles.map((c) => c.periodLength).toList();
+    avgPeriodLength =
         periodLengths.reduce((a, b) => a + b) / periodLengths.length;
-    int variation = cycleLengths.reduce(max) - cycleLengths.reduce(min);
 
-    if (variation > 10 && cycleLengths.length >= 3) {
-      avgCycleLength =
-          (cycleLengths[0] * 3 + cycleLengths[1] * 2 + cycleLengths[2] * 1) /
-              6.0;
-    }
-
+    // ── Status labels ──────────────────────────────────────────
     final String cycleStatus =
-        (avgCycleLength >= 21 && avgCycleLength <= 35) ? "Healthy" : "Poor";
+        (weightedAvg >= 21 && weightedAvg <= 35) ? "Healthy" : "Poor";
     final String periodStatus = (avgPeriodLength >= 3 && avgPeriodLength <= 8)
         ? "Regular"
         : "Irregular";
@@ -252,20 +349,16 @@ class _CycleLoggingPageState extends State<CycleLoggingPage>
             ? "Slightly Irregular"
             : "Irregular";
 
-    final DateTime? lastValidStartDate = currentCycleStartDate ??
-        (completedCycles.isNotEmpty ? completedCycles.first.startDate : null);
+    // ── Predictions anchored to most recent start_date ─────────
+    final DateTime anchor = allCycles.first.startDate;
 
-    DateTime? nextPeriodDate, ovulationDate, fertileStart, fertileEnd;
-    if (lastValidStartDate != null) {
-      nextPeriodDate =
-          lastValidStartDate.add(Duration(days: avgCycleLength.round()));
-      ovulationDate = nextPeriodDate.subtract(const Duration(days: 14));
-      fertileStart = ovulationDate.subtract(const Duration(days: 5));
-      fertileEnd = ovulationDate.add(const Duration(days: 1));
-    }
+    final nextPeriodDate = anchor.add(Duration(days: weightedAvg.round()));
+    final ovulationDate = nextPeriodDate.subtract(const Duration(days: 14));
+    final fertileStart = ovulationDate.subtract(const Duration(days: 5));
+    final fertileEnd = ovulationDate.add(const Duration(days: 1));
 
     return CycleAnalysisResult(
-      avgCycleLength: avgCycleLength,
+      avgCycleLength: weightedAvg,
       avgPeriodLength: avgPeriodLength,
       variation: variation,
       nextPeriodDate: nextPeriodDate,
@@ -300,7 +393,6 @@ class _CycleLoggingPageState extends State<CycleLoggingPage>
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    // Dialog header
                     Row(
                       children: [
                         Container(
@@ -342,7 +434,8 @@ class _CycleLoggingPageState extends State<CycleLoggingPage>
                                       CycleData(
                                         id: 'new_${DateTime.now().millisecondsSinceEpoch}',
                                         startDate: DateTime.now(),
-                                        endDate: DateTime.now(),
+                                        cycleLength: 28,
+                                        periodLength: 5,
                                       ),
                                     );
                                   });
@@ -416,33 +509,22 @@ class _CycleLoggingPageState extends State<CycleLoggingPage>
                                           dialogHistory[index] = CycleData(
                                             id: cycle.id,
                                             startDate: d,
-                                            endDate: cycle.endDate,
+                                            cycleLength: cycle.cycleLength,
+                                            periodLength: cycle.periodLength,
                                           );
                                         });
                                       }
                                     },
                                   ),
                                   const SizedBox(height: 4),
-                                  _dialogDateRow(
-                                    label: "End  ",
-                                    date: cycle.endDate,
-                                    onTap: () async {
-                                      final d = await showDatePicker(
-                                        context: context,
-                                        initialDate: cycle.endDate,
-                                        firstDate: DateTime(2020),
-                                        lastDate: DateTime.now(),
-                                      );
-                                      if (d != null) {
-                                        setDialogState(() {
-                                          dialogHistory[index] = CycleData(
-                                            id: cycle.id,
-                                            startDate: cycle.startDate,
-                                            endDate: d,
-                                          );
-                                        });
-                                      }
-                                    },
+                                  _dialogInfoRow(
+                                    label: "Cycle ",
+                                    value: "${cycle.cycleLength} days",
+                                  ),
+                                  const SizedBox(height: 4),
+                                  _dialogInfoRow(
+                                    label: "Period",
+                                    value: "${cycle.periodLength} days",
                                   ),
                                 ],
                               ),
@@ -521,9 +603,31 @@ class _CycleLoggingPageState extends State<CycleLoggingPage>
     );
   }
 
-  /// Save cycle history to Supabase:
-  ///   1. Delete all existing cycles for this user.
-  ///   2. Insert the updated list.
+  Widget _dialogInfoRow({required String label, required String value}) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      decoration: BoxDecoration(
+        color: CycleTheme.surface,
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Text(
+            "$label:  $value",
+            style:
+                const TextStyle(fontSize: 13, color: CycleTheme.textSecondary),
+          ),
+          const Icon(Icons.info_outline,
+              size: 14, color: CycleTheme.primaryLight),
+        ],
+      ),
+    );
+  }
+
+  /// Saves edited cycle history to the 'cycles' table.
+  /// After re-inserting, re-derives and updates stored cycle_length values
+  /// so the DB stays consistent with the Flo-style derivation approach.
   Future<void> _saveCycleHistory(List<CycleData> history) async {
     final user = _supabase.auth.currentUser;
     if (user == null) return;
@@ -531,29 +635,35 @@ class _CycleLoggingPageState extends State<CycleLoggingPage>
     setState(() => _isLoading = true);
 
     try {
-      // Validate dates first
-      for (final cycle in history) {
-        if (cycle.endDate.isBefore(cycle.startDate)) {
-          if (!mounted) return;
-          _showSnack("Error: End date cannot be before start date.",
-              isError: true);
-          setState(() => _isLoading = false);
-          return;
-        }
-      }
-
-      // Delete all existing cycles for this user
       await _supabase.from('cycles').delete().eq('user_id', user.id);
 
-      // Insert updated cycles (skip if list is empty)
       if (history.isNotEmpty) {
-        final rows = history
-            .map((cycle) => {
-                  'user_id': user.id,
-                  'start_date': cycle.startDate.toIso8601String(),
-                  'end_date': cycle.endDate.toIso8601String(),
-                })
-            .toList();
+        // Sort ascending for insertion and derivation
+        final sorted = List<CycleData>.from(history)
+          ..sort((a, b) => a.startDate.compareTo(b.startDate));
+
+        final rows = <Map<String, dynamic>>[];
+        for (int i = 0; i < sorted.length; i++) {
+          final cycle = sorted[i];
+          int storedLength = cycle.cycleLength;
+
+          // Re-derive cycle_length from the gap to the next start_date
+          if (i < sorted.length - 1) {
+            final gap =
+                sorted[i + 1].startDate.difference(cycle.startDate).inDays;
+            if (gap >= _minCycleLength && gap <= _maxCycleLength) {
+              storedLength = gap;
+            }
+          }
+
+          rows.add({
+            'user_id': user.id,
+            'start_date': DateFormat('yyyy-MM-dd').format(cycle.startDate),
+            'cycle_length': storedLength,
+            'period_length': cycle.periodLength,
+            'created_at': DateTime.now().toUtc().toIso8601String(),
+          });
+        }
 
         await _supabase.from('cycles').insert(rows);
       }
@@ -662,7 +772,6 @@ class _CycleLoggingPageState extends State<CycleLoggingPage>
         borderRadius: BorderRadius.circular(20),
         child: Column(
           children: [
-            // Calendar header strip
             Container(
               width: double.infinity,
               padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
@@ -699,7 +808,6 @@ class _CycleLoggingPageState extends State<CycleLoggingPage>
                 ],
               ),
             ),
-            // Calendar picker
             Theme(
               data: ThemeData(
                 colorScheme: const ColorScheme.light(
@@ -717,7 +825,6 @@ class _CycleLoggingPageState extends State<CycleLoggingPage>
                     setState(() => _selectedDate = newDate),
               ),
             ),
-            // Selected date chip
             Padding(
               padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
               child: Row(
@@ -799,8 +906,6 @@ class _CycleLoggingPageState extends State<CycleLoggingPage>
     );
   }
 
-  // ── CURRENT CYCLE COUNTER CARD ─────────────────────────────────────────────
-
   Widget _buildCurrentCycleCard() {
     final cycleDays = _lastPeriodDate != null
         ? DateTime.now().difference(_lastPeriodDate!).inDays
@@ -872,7 +977,6 @@ class _CycleLoggingPageState extends State<CycleLoggingPage>
                     ),
                 ],
               ),
-              // Circular progress
               SizedBox(
                 width: 80,
                 height: 80,
@@ -900,7 +1004,6 @@ class _CycleLoggingPageState extends State<CycleLoggingPage>
             ],
           ),
           const SizedBox(height: 16),
-          // Progress bar
           ClipRRect(
             borderRadius: BorderRadius.circular(4),
             child: LinearProgressIndicator(
@@ -925,8 +1028,6 @@ class _CycleLoggingPageState extends State<CycleLoggingPage>
       ),
     );
   }
-
-  // ── PREDICTIONS CARD ───────────────────────────────────────────────────────
 
   Widget _buildPredictionsCard() {
     final r = _analysisResult;
@@ -1033,8 +1134,6 @@ class _CycleLoggingPageState extends State<CycleLoggingPage>
       ],
     );
   }
-
-  // ── CYCLE SUMMARY CARD ────────────────────────────────────────────────────
 
   Widget _buildCycleSummaryCard() {
     final r = _analysisResult;

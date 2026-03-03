@@ -253,6 +253,13 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
   Animation<Offset>? _cardSlide;
   Animation<double>? _cardFade;
 
+  double? _avgCycleLength;
+  double? _avgPeriodLength;
+  DateTime? _nextPeriodDate;
+  DateTime? _ovulationDate;
+  DateTime? _fertileStart;
+  DateTime? _fertileEnd;
+
   final Map<String, List<Map<String, String>>> _quotes = {
     'period': [
       {'text': 'Be gentle with yourself today', 'icon': '🌸'},
@@ -335,14 +342,25 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
   }
 
   void _updateQuote() {
-    final day = _calculateCycleDay();
+    final today =
+        DateTime(_selectedDate.year, _selectedDate.month, _selectedDate.day);
     String phase = 'default';
-    if (day >= 1 && day <= 5) {
-      phase = 'period';
-    } else if (day >= 10 && day <= 16) {
-      phase = 'fertile';
-    } else if (day > 16 && day <= 28) {
-      phase = 'luteal';
+    if (_lastPeriodDate != null && _avgPeriodLength != null) {
+      final p = DateTime(
+          _lastPeriodDate!.year, _lastPeriodDate!.month, _lastPeriodDate!.day);
+      final day = today.difference(p).inDays + 1;
+      if (day >= 1 && day <= (_avgPeriodLength!.round().clamp(1, 10))) {
+        phase = 'period';
+      } else if (_fertileStart != null &&
+          _fertileEnd != null &&
+          !today.isBefore(DateTime(
+              _fertileStart!.year, _fertileStart!.month, _fertileStart!.day)) &&
+          !today.isAfter(DateTime(
+              _fertileEnd!.year, _fertileEnd!.month, _fertileEnd!.day))) {
+        phase = 'fertile';
+      } else {
+        phase = 'luteal';
+      }
     }
     final list = _quotes[phase]!;
     final picked = list[Random().nextInt(list.length)];
@@ -380,6 +398,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
           }
         });
       }
+      await _fetchCyclePredictionData();
     } catch (_) {}
   }
 
@@ -391,11 +410,14 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
         DateTime(_selectedDate.year, _selectedDate.month, _selectedDate.day);
     final p = DateTime(
         _lastPeriodDate!.year, _lastPeriodDate!.month, _lastPeriodDate!.day);
-    return s.difference(p).inDays + 1;
+    final day = s.difference(p).inDays + 1;
+    return day;
   }
 
   Map<String, dynamic> _getCycleDisplayData(int cycleDay) {
-    if (cycleDay == 0) {
+    final s =
+        DateTime(_selectedDate.year, _selectedDate.month, _selectedDate.day);
+    if (_lastPeriodDate == null) {
       return {
         'title': 'Track your cycle',
         'mainText': '?',
@@ -405,52 +427,75 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
         'phase': 'none',
       };
     }
-    if (cycleDay < 1) {
-      return {
-        'title': 'Days until period',
-        'mainText': '${cycleDay.abs()}',
-        'subtitle': 'Predicted start',
-        'color': HomeTheme.purple,
-        'progress': 0.9,
-        'phase': 'upcoming',
-      };
-    } else if (cycleDay >= 1 && cycleDay <= 5) {
+    final avgLen = (_avgCycleLength ?? 28.0).clamp(15.0, 60.0);
+    final avgPeriod = (_avgPeriodLength ?? 5.0).clamp(1.0, 15.0);
+    final p = DateTime(
+        _lastPeriodDate!.year, _lastPeriodDate!.month, _lastPeriodDate!.day);
+    final day = s.difference(p).inDays + 1;
+    final progress = (day / avgLen).clamp(0.0, 1.0);
+    final withinPeriod = day >= 1 && day <= avgPeriod.round();
+    final withinFertile = _fertileStart != null &&
+        _fertileEnd != null &&
+        !s.isBefore(DateTime(
+            _fertileStart!.year, _fertileStart!.month, _fertileStart!.day)) &&
+        !s.isAfter(
+            DateTime(_fertileEnd!.year, _fertileEnd!.month, _fertileEnd!.day));
+    final isOvulation = _ovulationDate != null &&
+        s.year == _ovulationDate!.year &&
+        s.month == _ovulationDate!.month &&
+        s.day == _ovulationDate!.day;
+    final daysUntilNext =
+        _nextPeriodDate != null ? _nextPeriodDate!.difference(s).inDays : null;
+    if (withinPeriod) {
       return {
         'title': 'Period Day',
-        'mainText': '$cycleDay',
+        'mainText': '$day',
         'subtitle': 'Low chance of pregnancy',
         'color': HomeTheme.red,
-        'progress': cycleDay / 5.0 * 0.25,
+        'progress': (day / avgPeriod) * 0.25,
         'phase': 'period',
       };
-    } else if (cycleDay >= 10 && cycleDay <= 16) {
-      final daysToOv = 14 - cycleDay;
+    }
+    if (withinFertile || isOvulation) {
+      int? dToOv;
+      if (_ovulationDate != null) {
+        dToOv = _ovulationDate!.difference(s).inDays;
+      }
       return {
-        'title': daysToOv == 0
+        'title': dToOv == 0
             ? 'Ovulation Day'
-            : daysToOv > 0
+            : (dToOv != null && dToOv > 0)
                 ? 'Ovulation in'
                 : 'Fertile Window',
-        'mainText': daysToOv == 0
+        'mainText': dToOv == 0
             ? 'Today'
-            : daysToOv > 0
-                ? '$daysToOv days'
-                : 'Day $cycleDay',
+            : (dToOv != null && dToOv > 0)
+                ? '${dToOv} days'
+                : 'Day $day',
         'subtitle': 'Higher chance of pregnancy',
         'color': HomeTheme.teal,
-        'progress': 0.35 + ((cycleDay - 10) / 6.0 * 0.15),
+        'progress': 0.35 + (progress * 0.15),
         'phase': 'fertile',
       };
-    } else {
+    }
+    if (daysUntilNext != null && daysUntilNext > 0 && daysUntilNext <= 7) {
       return {
-        'title': 'Cycle Day',
-        'mainText': '$cycleDay',
-        'subtitle': 'Follicular / Luteal phase',
+        'title': 'Days until period',
+        'mainText': '$daysUntilNext',
+        'subtitle': 'Predicted start',
         'color': HomeTheme.purple,
-        'progress': cycleDay / 28.0,
-        'phase': 'luteal',
+        'progress': (1.0).clamp(0.0, 1.0),
+        'phase': 'upcoming',
       };
     }
+    return {
+      'title': 'Cycle Day',
+      'mainText': '$day',
+      'subtitle': 'Follicular / Luteal phase',
+      'color': HomeTheme.purple,
+      'progress': progress,
+      'phase': 'luteal',
+    };
   }
 
   String _getWeekday(int weekday) =>
@@ -472,6 +517,78 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
       'December',
     ];
     return '${months[date.month - 1]} ${date.year}';
+  }
+
+  Future<void> _fetchCyclePredictionData() async {
+    if (_currentUser == null) return;
+    try {
+      final rows = await _supabase
+          .from('cycles')
+          .select()
+          .eq('user_id', _currentUser!.id)
+          .order('start_date', ascending: false);
+      final list = (rows as List)
+          .map((r) => _CycleRow.fromMap(r as Map<String, dynamic>))
+          .toList();
+      if (list.isNotEmpty) {
+        final anchor = list.first.startDate;
+        final lens = _deriveCycleLengths(list);
+        final filtered = _filterOutliers(lens);
+        final avgLen = filtered.isEmpty
+            ? list.first.cycleLength.toDouble()
+            : _weightedAvgCycleLength(filtered);
+        final avgPeriod =
+            list.map((e) => e.periodLength).fold<int>(0, (a, b) => a + b) /
+                list.length;
+        final nextPeriod = anchor.add(Duration(days: avgLen.round()));
+        final ovu = nextPeriod.subtract(const Duration(days: 14));
+        final fertStart = ovu.subtract(const Duration(days: 5));
+        final fertEnd = ovu.add(const Duration(days: 1));
+        if (mounted) {
+          setState(() {
+            _lastPeriodDate = anchor;
+            _avgCycleLength = avgLen;
+            _avgPeriodLength = avgPeriod.toDouble();
+            _nextPeriodDate = nextPeriod;
+            _ovulationDate = ovu;
+            _fertileStart = fertStart;
+            _fertileEnd = fertEnd;
+          });
+        }
+      }
+    } catch (_) {}
+  }
+
+  List<int> _deriveCycleLengths(List<_CycleRow> cycles) {
+    if (cycles.length < 2) return [];
+    final lengths = <int>[];
+    for (int i = 0; i < cycles.length - 1; i++) {
+      final diff =
+          cycles[i].startDate.difference(cycles[i + 1].startDate).inDays;
+      if (diff >= 15 && diff <= 60) {
+        lengths.add(diff);
+      }
+    }
+    return lengths;
+  }
+
+  List<int> _filterOutliers(List<int> lengths) {
+    if (lengths.length < 3) return lengths;
+    final sorted = List<int>.from(lengths)..sort();
+    final mid = sorted.length ~/ 2;
+    final median = sorted.length.isOdd
+        ? sorted[mid].toDouble()
+        : (sorted[mid - 1] + sorted[mid]) / 2.0;
+    return lengths.where((l) => l <= median * 2).toList();
+  }
+
+  double _weightedAvgCycleLength(List<int> lengths) {
+    if (lengths.isEmpty) return 28.0;
+    if (lengths.length == 1) return lengths[0].toDouble();
+    if (lengths.length == 2) {
+      return (lengths[0] * 2 + lengths[1] * 1) / 3.0;
+    }
+    return (lengths[0] * 3 + lengths[1] * 2 + lengths[2] * 1) / 6.0;
   }
 
   // ── GLUCOSE HELPERS ────────────────────────────────────────────────────────
@@ -1402,6 +1519,23 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
           ],
         ),
       ),
+    );
+  }
+}
+
+class _CycleRow {
+  final DateTime startDate;
+  final int cycleLength;
+  final int periodLength;
+  _CycleRow(
+      {required this.startDate,
+      required this.cycleLength,
+      required this.periodLength});
+  factory _CycleRow.fromMap(Map<String, dynamic> row) {
+    return _CycleRow(
+      startDate: DateTime.parse(row['start_date'] as String),
+      cycleLength: (row['cycle_length'] as num?)?.toInt() ?? 28,
+      periodLength: (row['period_length'] as num?)?.toInt() ?? 5,
     );
   }
 }

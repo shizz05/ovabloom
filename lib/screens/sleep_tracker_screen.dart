@@ -149,16 +149,14 @@ class _SleepTrackerScreenState extends State<SleepTrackerScreen>
     });
 
     try {
-      // ── Insert into Supabase ────────────────────────────────────
       await _supabase.from('sleep_logs').insert({
         'user_id': _uid,
         'hours': h,
         'minutes': m,
-        'date': dateStr, // "2026-02-24"
-        'created_at': now.toUtc().toIso8601String(), // for ordering / queries
+        'date': dateStr,
+        'created_at': now.toUtc().toIso8601String(),
       });
 
-      // Refresh weekly average
       await _loadWeeklyAvg();
 
       if (mounted) {
@@ -197,23 +195,41 @@ class _SleepTrackerScreenState extends State<SleepTrackerScreen>
   // ════════════════════════════════════════════════════════════════
   @override
   Widget build(BuildContext context) {
+    final screenWidth = MediaQuery.of(context).size.width;
+    final screenHeight = MediaQuery.of(context).size.height;
+    final isSmall = screenWidth < 360;
+    final isTablet = screenWidth >= 600;
+
+    // Responsive sizing
+    final donutSize = isTablet
+        ? 260.0
+        : isSmall
+            ? 170.0
+            : (screenWidth * 0.52).clamp(170.0, 220.0);
+
+    final horizontalPadding = isTablet
+        ? screenWidth * 0.12
+        : isSmall
+            ? 16.0
+            : 24.0;
+
     return Scaffold(
       backgroundColor: _bg,
       body: SafeArea(
         child: Column(
           children: [
-            _buildHeader(context),
+            _buildHeader(context, isTablet: isTablet),
             Expanded(
               child: SingleChildScrollView(
                 physics: const BouncingScrollPhysics(),
-                padding: const EdgeInsets.symmetric(horizontal: 24),
+                padding: EdgeInsets.symmetric(horizontal: horizontalPadding),
                 child: Column(
                   children: [
-                    const SizedBox(height: 28),
-                    _buildDonut(),
-                    const SizedBox(height: 36),
-                    _buildLogCard(),
-                    const SizedBox(height: 32),
+                    SizedBox(height: isSmall ? 18 : 28),
+                    _buildDonut(donutSize: donutSize, isSmall: isSmall),
+                    SizedBox(height: isSmall ? 24 : 36),
+                    _buildLogCard(isSmall: isSmall, isTablet: isTablet),
+                    SizedBox(height: isSmall ? 20 : 32),
                   ],
                 ),
               ),
@@ -225,9 +241,9 @@ class _SleepTrackerScreenState extends State<SleepTrackerScreen>
   }
 
   // ── Header ────────────────────────────────────────────────────────
-  Widget _buildHeader(BuildContext context) {
+  Widget _buildHeader(BuildContext context, {required bool isTablet}) {
     return Padding(
-      padding: const EdgeInsets.fromLTRB(8, 12, 8, 0),
+      padding: EdgeInsets.fromLTRB(isTablet ? 16 : 8, 12, isTablet ? 16 : 8, 0),
       child: Row(
         children: [
           IconButton(
@@ -257,7 +273,12 @@ class _SleepTrackerScreenState extends State<SleepTrackerScreen>
   }
 
   // ── Donut chart ───────────────────────────────────────────────────
-  Widget _buildDonut() {
+  Widget _buildDonut({required double donutSize, required bool isSmall}) {
+    final centerSpaceRadius = donutSize * 0.336;
+    final sectionRadius = donutSize * 0.136;
+    final avgFontSize = isSmall ? 22.0 : 28.0;
+    final labelFontSize = isSmall ? 11.0 : 12.0;
+
     return AnimatedBuilder(
       animation: _donutAnim,
       builder: (_, __) {
@@ -266,8 +287,8 @@ class _SleepTrackerScreenState extends State<SleepTrackerScreen>
         final rest = (100 - filled).clamp(0.001, 99.999);
 
         return Container(
-          width: 220,
-          height: 220,
+          width: donutSize,
+          height: donutSize,
           decoration: BoxDecoration(
             color: _card,
             shape: BoxShape.circle,
@@ -286,33 +307,42 @@ class _SleepTrackerScreenState extends State<SleepTrackerScreen>
                 PieChartData(
                   sections: [
                     PieChartSectionData(
-                        color: _primary, value: filled, title: '', radius: 30),
+                        color: _primary,
+                        value: filled,
+                        title: '',
+                        radius: sectionRadius),
                     PieChartSectionData(
-                        color: _pieRest, value: rest, title: '', radius: 30),
+                        color: _pieRest,
+                        value: rest,
+                        title: '',
+                        radius: sectionRadius),
                   ],
                   startDegreeOffset: -90,
                   sectionsSpace: 0,
-                  centerSpaceRadius: 74,
+                  centerSpaceRadius: centerSpaceRadius,
                 ),
               ),
               Column(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  const Text('Average Weekly',
-                      style: TextStyle(color: _textMuted, fontSize: 12)),
+                  Text(
+                    'Average Weekly',
+                    style:
+                        TextStyle(color: _textMuted, fontSize: labelFontSize),
+                  ),
                   const SizedBox(height: 6),
                   _loadingAvg
-                      ? const SizedBox(
-                          width: 22,
-                          height: 22,
-                          child: CircularProgressIndicator(
+                      ? SizedBox(
+                          width: isSmall ? 18 : 22,
+                          height: isSmall ? 18 : 22,
+                          child: const CircularProgressIndicator(
                               strokeWidth: 2, color: _primary),
                         )
                       : Text(
                           _avgLabel,
-                          style: const TextStyle(
+                          style: TextStyle(
                             color: _textDark,
-                            fontSize: 28,
+                            fontSize: avgFontSize,
                             fontWeight: FontWeight.w800,
                             letterSpacing: -0.5,
                           ),
@@ -327,11 +357,22 @@ class _SleepTrackerScreenState extends State<SleepTrackerScreen>
   }
 
   // ── Log card ──────────────────────────────────────────────────────
-  Widget _buildLogCard() {
+  Widget _buildLogCard({required bool isSmall, required bool isTablet}) {
+    final cardPadding = isSmall ? 16.0 : (isTablet ? 32.0 : 24.0);
+    final titleFontSize = isSmall ? 16.0 : 18.0;
+    final subtitleFontSize = isSmall ? 12.0 : 13.0;
+    final buttonHeight = isSmall ? 48.0 : 54.0;
+    final buttonFontSize = isSmall ? 14.0 : 16.0;
+    final iconSize = isSmall ? 18.0 : 20.0;
+    final iconContainerSize = isSmall ? 34.0 : 40.0;
+    final iconInnerSize = isSmall ? 16.0 : 20.0;
+    final spacingAfterTitle = isSmall ? 16.0 : 24.0;
+    final spacingBeforeButton = isSmall ? 16.0 : 24.0;
+
     return Container(
       decoration: BoxDecoration(
         color: _card,
-        borderRadius: BorderRadius.circular(28),
+        borderRadius: BorderRadius.circular(isTablet ? 32 : 28),
         boxShadow: [
           BoxShadow(
             color: _primary.withOpacity(0.14),
@@ -341,7 +382,7 @@ class _SleepTrackerScreenState extends State<SleepTrackerScreen>
         ],
       ),
       child: Padding(
-        padding: const EdgeInsets.all(24),
+        padding: EdgeInsets.all(cardPadding),
         child: Form(
           key: _formKey,
           child: Column(
@@ -349,36 +390,43 @@ class _SleepTrackerScreenState extends State<SleepTrackerScreen>
             children: [
               // Title row
               Row(
+                crossAxisAlignment: CrossAxisAlignment.center,
                 children: [
                   Container(
-                    padding: const EdgeInsets.all(8),
+                    width: iconContainerSize,
+                    height: iconContainerSize,
                     decoration: BoxDecoration(
                       color: _primary.withOpacity(0.14),
-                      borderRadius: BorderRadius.circular(12),
+                      borderRadius: BorderRadius.circular(isSmall ? 10 : 12),
                     ),
-                    child: const Icon(Icons.nights_stay_rounded,
-                        color: _primary, size: 20),
+                    child: Center(
+                      child: Icon(Icons.nights_stay_rounded,
+                          color: _primary, size: iconInnerSize),
+                    ),
                   ),
                   const SizedBox(width: 12),
-                  const Text(
-                    'Log Hours',
-                    style: TextStyle(
-                      color: _textDark,
-                      fontSize: 18,
-                      fontWeight: FontWeight.w700,
+                  Expanded(
+                    child: Text(
+                      'Log Hours',
+                      style: TextStyle(
+                        color: _textDark,
+                        fontSize: titleFontSize,
+                        fontWeight: FontWeight.w700,
+                      ),
                     ),
                   ),
                 ],
               ),
               const SizedBox(height: 6),
               Padding(
-                padding: const EdgeInsets.only(left: 44),
+                padding: EdgeInsets.only(left: iconContainerSize + 12),
                 child: Text(
                   'How much did you sleep last night?',
-                  style: TextStyle(color: _textMuted, fontSize: 13),
+                  style:
+                      TextStyle(color: _textMuted, fontSize: subtitleFontSize),
                 ),
               ),
-              const SizedBox(height: 24),
+              SizedBox(height: spacingAfterTitle),
 
               // Inputs
               Row(
@@ -389,6 +437,7 @@ class _SleepTrackerScreenState extends State<SleepTrackerScreen>
                       label: 'Hours',
                       hint: '0–12',
                       suffix: 'h',
+                      isSmall: isSmall,
                       validator: (v) {
                         final n = int.tryParse(v ?? '');
                         if (n == null || n < 0 || n > 12) return 'Enter 0–12';
@@ -396,13 +445,14 @@ class _SleepTrackerScreenState extends State<SleepTrackerScreen>
                       },
                     ),
                   ),
-                  const SizedBox(width: 14),
+                  SizedBox(width: isSmall ? 10 : 14),
                   Expanded(
                     child: _InputField(
                       controller: _minsCtrl,
                       label: 'Minutes',
                       hint: '0–59',
                       suffix: 'm',
+                      isSmall: isSmall,
                       validator: (v) {
                         final n = int.tryParse(v ?? '');
                         if (n == null || n < 0 || n > 59) return 'Enter 0–59';
@@ -413,12 +463,12 @@ class _SleepTrackerScreenState extends State<SleepTrackerScreen>
                 ],
               ),
 
-              const SizedBox(height: 24),
+              SizedBox(height: spacingBeforeButton),
 
               // Save button
               SizedBox(
                 width: double.infinity,
-                height: 54,
+                height: buttonHeight,
                 child: ElevatedButton(
                   onPressed: _isSaving ? null : _saveSleep,
                   style: ElevatedButton.styleFrom(
@@ -426,43 +476,43 @@ class _SleepTrackerScreenState extends State<SleepTrackerScreen>
                     foregroundColor: Colors.white,
                     disabledBackgroundColor: _primary.withOpacity(0.6),
                     shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(16),
+                      borderRadius: BorderRadius.circular(isSmall ? 14 : 16),
                     ),
                     elevation: 0,
                   ),
                   child: _isSaving
-                      ? const SizedBox(
-                          width: 22,
-                          height: 22,
-                          child: CircularProgressIndicator(
+                      ? SizedBox(
+                          width: isSmall ? 18 : 22,
+                          height: isSmall ? 18 : 22,
+                          child: const CircularProgressIndicator(
                               strokeWidth: 2.5, color: Colors.white),
                         )
                       : _saved
                           ? ScaleTransition(
                               scale: _successScale,
-                              child: const Row(
+                              child: Row(
                                 mainAxisAlignment: MainAxisAlignment.center,
                                 children: [
                                   Icon(Icons.check_circle_outline_rounded,
-                                      size: 20),
-                                  SizedBox(width: 8),
+                                      size: iconSize),
+                                  const SizedBox(width: 8),
                                   Text('Saved!',
                                       style: TextStyle(
                                           fontWeight: FontWeight.w700,
-                                          fontSize: 16)),
+                                          fontSize: buttonFontSize)),
                                 ],
                               ),
                             )
-                          : const Row(
+                          : Row(
                               mainAxisAlignment: MainAxisAlignment.center,
                               children: [
                                 Icon(Icons.add_circle_outline_rounded,
-                                    size: 20),
-                                SizedBox(width: 8),
+                                    size: iconSize),
+                                const SizedBox(width: 8),
                                 Text('Save Sleep',
                                     style: TextStyle(
                                         fontWeight: FontWeight.w700,
-                                        fontSize: 16)),
+                                        fontSize: buttonFontSize)),
                               ],
                             ),
                 ),
@@ -470,26 +520,32 @@ class _SleepTrackerScreenState extends State<SleepTrackerScreen>
 
               // ── Success banner ──────────────────────────────────
               if (_saved) ...[
-                const SizedBox(height: 14),
+                SizedBox(height: isSmall ? 10 : 14),
                 ScaleTransition(
                   scale: _successScale,
                   child: Container(
-                    padding: const EdgeInsets.symmetric(
-                        vertical: 12, horizontal: 16),
+                    padding: EdgeInsets.symmetric(
+                        vertical: isSmall ? 10 : 12,
+                        horizontal: isSmall ? 12 : 16),
                     decoration: BoxDecoration(
                       color: _accent.withOpacity(0.18),
-                      borderRadius: BorderRadius.circular(14),
+                      borderRadius: BorderRadius.circular(isSmall ? 12 : 14),
                     ),
                     child: Row(
                       children: [
-                        const Icon(Icons.check_circle_rounded,
-                            color: Color(0xFF4CAF50), size: 18),
+                        Icon(Icons.check_circle_rounded,
+                            color: const Color(0xFF4CAF50),
+                            size: isSmall ? 16 : 18),
                         const SizedBox(width: 8),
-                        Text(
-                          'Sleep logged & saved to Supabase!',
-                          style: TextStyle(
-                            color: _textDark.withOpacity(0.75),
-                            fontSize: 13,
+                        Expanded(
+                          child: Text(
+                            'Sleep logged & saved to Supabase!',
+                            style: TextStyle(
+                              color: _textDark.withOpacity(0.75),
+                              fontSize: isSmall ? 11 : 13,
+                            ),
+                            overflow: TextOverflow.ellipsis,
+                            maxLines: 2,
                           ),
                         ),
                       ],
@@ -500,25 +556,28 @@ class _SleepTrackerScreenState extends State<SleepTrackerScreen>
 
               // ── Error banner ────────────────────────────────────
               if (_errorMsg != null) ...[
-                const SizedBox(height: 14),
+                SizedBox(height: isSmall ? 10 : 14),
                 Container(
-                  padding:
-                      const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
+                  padding: EdgeInsets.symmetric(
+                      vertical: isSmall ? 10 : 12,
+                      horizontal: isSmall ? 12 : 16),
                   decoration: BoxDecoration(
                     color: const Color(0xFFFF8A80).withOpacity(0.12),
-                    borderRadius: BorderRadius.circular(14),
+                    borderRadius: BorderRadius.circular(isSmall ? 12 : 14),
                   ),
                   child: Row(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      const Icon(Icons.error_outline_rounded,
-                          color: Color(0xFFE53935), size: 18),
+                      Icon(Icons.error_outline_rounded,
+                          color: const Color(0xFFE53935),
+                          size: isSmall ? 16 : 18),
                       const SizedBox(width: 8),
                       Expanded(
                         child: Text(
                           _errorMsg!,
-                          style: const TextStyle(
-                              color: Color(0xFFE53935), fontSize: 12),
+                          style: TextStyle(
+                              color: const Color(0xFFE53935),
+                              fontSize: isSmall ? 11 : 12),
                         ),
                       ),
                     ],
@@ -534,7 +593,7 @@ class _SleepTrackerScreenState extends State<SleepTrackerScreen>
 }
 
 // ════════════════════════════════════════════════════════════════════
-//  INPUT FIELD WIDGET  (unchanged)
+//  INPUT FIELD WIDGET
 // ════════════════════════════════════════════════════════════════════
 class _InputField extends StatelessWidget {
   final TextEditingController controller;
@@ -542,6 +601,7 @@ class _InputField extends StatelessWidget {
   final String hint;
   final String suffix;
   final String? Function(String?)? validator;
+  final bool isSmall;
 
   const _InputField({
     required this.controller,
@@ -549,6 +609,7 @@ class _InputField extends StatelessWidget {
     required this.hint,
     required this.suffix,
     this.validator,
+    this.isSmall = false,
   });
 
   static const Color _primary = Color(0xFFA0B4F0);
@@ -558,16 +619,25 @@ class _InputField extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final labelFontSize = isSmall ? 11.0 : 12.0;
+    final valueFontSize = isSmall ? 18.0 : 22.0;
+    final hintFontSize = isSmall ? 14.0 : 16.0;
+    final suffixFontSize = isSmall ? 14.0 : 16.0;
+    final verticalPadding = isSmall ? 12.0 : 16.0;
+    final borderRadius = isSmall ? 12.0 : 16.0;
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(label,
-            style: const TextStyle(
-              color: _textMuted,
-              fontSize: 12,
-              fontWeight: FontWeight.w600,
-              letterSpacing: 0.3,
-            )),
+        Text(
+          label,
+          style: TextStyle(
+            color: _textMuted,
+            fontSize: labelFontSize,
+            fontWeight: FontWeight.w600,
+            letterSpacing: 0.3,
+          ),
+        ),
         const SizedBox(height: 8),
         TextFormField(
           controller: controller,
@@ -578,50 +648,52 @@ class _InputField extends StatelessWidget {
           ],
           validator: validator,
           textAlign: TextAlign.center,
-          style: const TextStyle(
+          style: TextStyle(
             color: _textDark,
-            fontSize: 22,
+            fontSize: valueFontSize,
             fontWeight: FontWeight.w700,
           ),
           decoration: InputDecoration(
             hintText: hint,
             hintStyle: TextStyle(
               color: _textMuted.withOpacity(0.5),
-              fontSize: 16,
+              fontSize: hintFontSize,
               fontWeight: FontWeight.w400,
             ),
             suffixText: suffix,
-            suffixStyle: const TextStyle(
+            suffixStyle: TextStyle(
               color: _primary,
-              fontSize: 16,
+              fontSize: suffixFontSize,
               fontWeight: FontWeight.w700,
             ),
             filled: true,
             fillColor: _bg,
             border: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(16),
+              borderRadius: BorderRadius.circular(borderRadius),
               borderSide: BorderSide.none,
             ),
             enabledBorder: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(16),
+              borderRadius: BorderRadius.circular(borderRadius),
               borderSide: BorderSide.none,
             ),
             focusedBorder: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(16),
+              borderRadius: BorderRadius.circular(borderRadius),
               borderSide: const BorderSide(color: _primary, width: 2),
             ),
             errorBorder: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(16),
+              borderRadius: BorderRadius.circular(borderRadius),
               borderSide:
                   const BorderSide(color: Color(0xFFFF8A80), width: 1.5),
             ),
             focusedErrorBorder: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(16),
+              borderRadius: BorderRadius.circular(borderRadius),
               borderSide:
                   const BorderSide(color: Color(0xFFFF8A80), width: 1.5),
             ),
-            contentPadding:
-                const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
+            contentPadding: EdgeInsets.symmetric(
+              horizontal: 16,
+              vertical: verticalPadding,
+            ),
           ),
         ),
       ],
