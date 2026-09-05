@@ -1,5 +1,4 @@
-import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:firebase_auth/firebase_auth.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:pcos_app/widgets/app_scaffold.dart';
 import 'package:flutter/material.dart';
 import 'package:pcos_app/logo_page.dart';
@@ -28,7 +27,6 @@ class _ProfileSettingsPageState extends State<ProfileSettingsPage>
   @override
   void initState() {
     super.initState();
-    // Initialize animations FIRST before anything that can trigger setState
     _animationController = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 700),
@@ -45,7 +43,6 @@ class _ProfileSettingsPageState extends State<ProfileSettingsPage>
       curve: Curves.easeOut,
     ));
     _animationController!.forward();
-    // Fetch data AFTER animations are ready
     _fetchUserData();
   }
 
@@ -56,24 +53,26 @@ class _ProfileSettingsPageState extends State<ProfileSettingsPage>
   }
 
   Future<void> _fetchUserData() async {
-    final user = FirebaseAuth.instance.currentUser;
+    final supabase = Supabase.instance.client;
+    final user = supabase.auth.currentUser;
+
     if (user != null) {
       try {
-        final doc = await FirebaseFirestore.instance
-            .collection('users')
-            .doc(user.uid)
-            .get();
-        if (doc.exists && doc.data() != null) {
-          if (mounted) {
-            setState(() {
-              _avatarUrl = doc.data()!['avatarUrl'] ?? _avatarUrl;
-              _userName = doc.data()!['name'] ?? _userName;
-              _userEmail = user.email ?? _userEmail;
-            });
-          }
+        final data = await supabase
+            .from('users')
+            .select('avatar_url, name') // ✅ snake_case
+            .eq('id', user.id)
+            .single();
+
+        if (mounted) {
+          setState(() {
+            _avatarUrl = data['avatar_url'] ?? _avatarUrl; // ✅ snake_case
+            _userName = data['name'] ?? _userName;
+            _userEmail = user.email ?? _userEmail;
+          });
         }
       } catch (e) {
-        // Handle error
+        debugPrint('Fetch user data failed: $e');
       }
     }
   }
@@ -166,11 +165,10 @@ class _ProfileSettingsPageState extends State<ProfileSettingsPage>
                         },
                       ),
                       const SizedBox(height: 32),
-                      // Log out — full-width pill button
                       _LogOutButton(
                         colorScheme: colorScheme,
                         onTap: () async {
-                          await FirebaseAuth.instance.signOut();
+                          await Supabase.instance.client.auth.signOut();
                           if (mounted) {
                             Navigator.of(context).pushAndRemoveUntil(
                               MaterialPageRoute(
@@ -256,7 +254,6 @@ class _ProfileHeader extends StatelessWidget {
         ),
         child: Column(
           children: [
-            // Avatar with edit badge
             Stack(
               alignment: Alignment.bottomRight,
               children: [
@@ -309,7 +306,6 @@ class _ProfileHeader extends StatelessWidget {
               ),
             ),
             const SizedBox(height: 14),
-            // Tap-to-edit hint chip
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
               decoration: BoxDecoration(
@@ -412,7 +408,6 @@ class _SettingsTileState extends State<_SettingsTile> {
           ),
           child: Row(
             children: [
-              // Icon container
               Container(
                 width: 46,
                 height: 46,
@@ -427,7 +422,6 @@ class _SettingsTileState extends State<_SettingsTile> {
                 ),
               ),
               const SizedBox(width: 14),
-              // Text
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,

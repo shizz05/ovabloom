@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:firebase_auth/firebase_auth.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import 'login_page.dart';
 
 class SignupPage extends StatefulWidget {
@@ -17,7 +16,7 @@ class _SignupPageState extends State<SignupPage> {
 
   bool isLoading = false;
 
-  // 🔹 SIGN UP FUNCTION (Firebase Auth)
+  // 🔹 SIGN UP FUNCTION (Supabase Auth)
   Future<void> signUp() async {
     if (emailController.text.isEmpty || passwordController.text.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -28,43 +27,36 @@ class _SignupPageState extends State<SignupPage> {
 
     setState(() => isLoading = true);
 
+    final supabase = Supabase.instance.client;
+
     try {
-      UserCredential userCredential = await FirebaseAuth.instance.createUserWithEmailAndPassword(
+      final response = await supabase.auth.signUp(
         email: emailController.text.trim(),
         password: passwordController.text.trim(),
+        data: {
+          'name': nameController.text.trim(), // stored as user metadata
+        },
       );
 
-      // Update Display Name
-      if (nameController.text.isNotEmpty) {
-        await userCredential.user?.updateDisplayName(nameController.text.trim());
-        await userCredential.user?.reload(); // Reload to ensure changes are reflected
-        
-        // Save user data to Firestore
-        await FirebaseFirestore.instance.collection('users').doc(userCredential.user!.uid).set({
-          'name': nameController.text.trim(),
-          'email': emailController.text.trim(),
-          'createdAt': FieldValue.serverTimestamp(),
-        });
-      }
+      if (response.user != null) {
+        print("✅ USER CREATED SUCCESSFULLY");
 
-      print("✅ USER CREATED SUCCESSFULLY");
-
-      // Success -> Navigate to HomePage (User is now logged in)
-      if (mounted) {
-        Navigator.pushReplacement(
-          context,
-          MaterialPageRoute(builder: (_) => const LoginPage()), // Or HomePage if you want direct access
-        );
+        if (mounted) {
+          Navigator.pushReplacement(
+            context,
+            MaterialPageRoute(
+              builder: (_) => const LoginPage(),
+            ),
+          );
+        }
       }
-    } on FirebaseAuthException catch (e) {
+    } on AuthException catch (e) {
       String message = "Signup failed";
 
-      if (e.code == 'email-already-in-use') {
+      if (e.message.contains("already registered")) {
         message = "Email already registered";
-      } else if (e.code == 'weak-password') {
-        message = "Password too weak (min 6 chars)";
-      } else if (e.code == 'invalid-email') {
-        message = "Invalid email address";
+      } else if (e.message.contains("Password should be")) {
+        message = "Password too weak";
       }
 
       ScaffoldMessenger.of(context).showSnackBar(
@@ -110,7 +102,6 @@ class _SignupPageState extends State<SignupPage> {
                 ),
               ),
               const SizedBox(height: 16),
-
               TextField(
                 controller: emailController,
                 keyboardType: TextInputType.emailAddress,
@@ -121,7 +112,6 @@ class _SignupPageState extends State<SignupPage> {
                 ),
               ),
               const SizedBox(height: 16),
-
               TextField(
                 controller: passwordController,
                 obscureText: true,
@@ -132,8 +122,6 @@ class _SignupPageState extends State<SignupPage> {
                 ),
               ),
               const SizedBox(height: 24),
-
-              // 🔹 SIGN UP BUTTON
               ElevatedButton(
                 onPressed: isLoading ? null : signUp,
                 style: ElevatedButton.styleFrom(
@@ -144,10 +132,7 @@ class _SignupPageState extends State<SignupPage> {
                     ? const CircularProgressIndicator(color: Colors.white)
                     : const Text('Sign Up'),
               ),
-
               const SizedBox(height: 16),
-
-              // LOGIN REDIRECT
               Center(
                 child: TextButton(
                   onPressed: () {

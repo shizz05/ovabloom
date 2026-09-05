@@ -1,8 +1,7 @@
 import 'dart:async';
 import 'dart:math';
 import 'package:flutter/material.dart';
-import 'package:firebase_auth/firebase_auth.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:pcos_app/widgets/app_scaffold.dart';
 import 'analytics_page.dart';
 import 'profile_settings_page.dart';
@@ -234,6 +233,9 @@ class HomePage extends StatefulWidget {
 class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
   final ScrollController _scrollController = ScrollController();
 
+  // Supabase client
+  final _supabase = Supabase.instance.client;
+
   DateTime _selectedDate = DateTime.now();
   DateTime? _lastPeriodDate;
   String? _userName;
@@ -250,6 +252,13 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
   Animation<double>? _circleScale;
   Animation<Offset>? _cardSlide;
   Animation<double>? _cardFade;
+
+  double? _avgCycleLength;
+  double? _avgPeriodLength;
+  DateTime? _nextPeriodDate;
+  DateTime? _ovulationDate;
+  DateTime? _fertileStart;
+  DateTime? _fertileEnd;
 
   final Map<String, List<Map<String, String>>> _quotes = {
     'period': [
@@ -296,7 +305,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
             parent: _cardSlideCtrl!, curve: Curves.easeOutCubic));
     _cardFade = CurvedAnimation(parent: _cardSlideCtrl!, curve: Curves.easeOut);
 
-    _currentUser = FirebaseAuth.instance.currentUser;
+    _currentUser = _supabase.auth.currentUser;
     _fetchUserData();
     _startQuoteTimer();
 
@@ -333,14 +342,25 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
   }
 
   void _updateQuote() {
-    final day = _calculateCycleDay();
+    final today =
+        DateTime(_selectedDate.year, _selectedDate.month, _selectedDate.day);
     String phase = 'default';
-    if (day >= 1 && day <= 5) {
-      phase = 'period';
-    } else if (day >= 10 && day <= 16) {
-      phase = 'fertile';
-    } else if (day > 16 && day <= 28) {
-      phase = 'luteal';
+    if (_lastPeriodDate != null && _avgPeriodLength != null) {
+      final p = DateTime(
+          _lastPeriodDate!.year, _lastPeriodDate!.month, _lastPeriodDate!.day);
+      final day = today.difference(p).inDays + 1;
+      if (day >= 1 && day <= (_avgPeriodLength!.round().clamp(1, 10))) {
+        phase = 'period';
+      } else if (_fertileStart != null &&
+          _fertileEnd != null &&
+          !today.isBefore(DateTime(
+              _fertileStart!.year, _fertileStart!.month, _fertileStart!.day)) &&
+          !today.isAfter(DateTime(
+              _fertileEnd!.year, _fertileEnd!.month, _fertileEnd!.day))) {
+        phase = 'fertile';
+      } else {
+        phase = 'luteal';
+      }
     }
     final list = _quotes[phase]!;
     final picked = list[Random().nextInt(list.length)];
@@ -351,33 +371,34 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     });
   }
 
-  // ── DATA FETCH ─────────────────────────────────────────────────────────────
+  // ── DATA FETCH (Supabase) ──────────────────────────────────────────────────
 
   Future<void> _fetchUserData() async {
+    _currentUser = _supabase.auth.currentUser;
     if (_currentUser == null) return;
-    await _currentUser?.reload();
-    if (!mounted) return;
-    setState(() => _currentUser = FirebaseAuth.instance.currentUser);
 
     try {
-      final doc = await FirebaseFirestore.instance
-          .collection('users')
-          .doc(_currentUser!.uid)
-          .get();
-      if (doc.exists && mounted) {
-        final data = doc.data()!;
+      final data = await _supabase
+          .from('users')
+          .select('last_period_date, name, avatar_url')
+          .eq('id', _currentUser!.id)
+          .maybeSingle();
+
+      if (data != null && mounted) {
         setState(() {
-          if (data.containsKey('lastPeriodDate')) {
-            _lastPeriodDate = (data['lastPeriodDate'] as Timestamp).toDate();
+          if (data['last_period_date'] != null) {
+            _lastPeriodDate =
+                DateTime.parse(data['last_period_date'] as String);
           }
-          if (data.containsKey('name')) {
+          if (data['name'] != null) {
             _userName = data['name'] as String?;
           }
-          if (data.containsKey('avatarUrl')) {
-            _avatarUrl = data['avatarUrl'] as String?;
+          if (data['avatar_url'] != null) {
+            _avatarUrl = data['avatar_url'] as String?;
           }
         });
       }
+      await _fetchCyclePredictionData();
     } catch (_) {}
   }
 
@@ -389,11 +410,14 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
         DateTime(_selectedDate.year, _selectedDate.month, _selectedDate.day);
     final p = DateTime(
         _lastPeriodDate!.year, _lastPeriodDate!.month, _lastPeriodDate!.day);
-    return s.difference(p).inDays + 1;
+    final day = s.difference(p).inDays + 1;
+    return day;
   }
 
   Map<String, dynamic> _getCycleDisplayData(int cycleDay) {
-    if (cycleDay == 0) {
+    final s =
+        DateTime(_selectedDate.year, _selectedDate.month, _selectedDate.day);
+    if (_lastPeriodDate == null) {
       return {
         'title': 'Track your cycle',
         'mainText': '?',
@@ -403,52 +427,75 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
         'phase': 'none',
       };
     }
-    if (cycleDay < 1) {
-      return {
-        'title': 'Days until period',
-        'mainText': '${cycleDay.abs()}',
-        'subtitle': 'Predicted start',
-        'color': HomeTheme.purple,
-        'progress': 0.9,
-        'phase': 'upcoming',
-      };
-    } else if (cycleDay >= 1 && cycleDay <= 5) {
+    final avgLen = (_avgCycleLength ?? 28.0).clamp(15.0, 60.0);
+    final avgPeriod = (_avgPeriodLength ?? 5.0).clamp(1.0, 15.0);
+    final p = DateTime(
+        _lastPeriodDate!.year, _lastPeriodDate!.month, _lastPeriodDate!.day);
+    final day = s.difference(p).inDays + 1;
+    final progress = (day / avgLen).clamp(0.0, 1.0);
+    final withinPeriod = day >= 1 && day <= avgPeriod.round();
+    final withinFertile = _fertileStart != null &&
+        _fertileEnd != null &&
+        !s.isBefore(DateTime(
+            _fertileStart!.year, _fertileStart!.month, _fertileStart!.day)) &&
+        !s.isAfter(
+            DateTime(_fertileEnd!.year, _fertileEnd!.month, _fertileEnd!.day));
+    final isOvulation = _ovulationDate != null &&
+        s.year == _ovulationDate!.year &&
+        s.month == _ovulationDate!.month &&
+        s.day == _ovulationDate!.day;
+    final daysUntilNext =
+        _nextPeriodDate != null ? _nextPeriodDate!.difference(s).inDays : null;
+    if (withinPeriod) {
       return {
         'title': 'Period Day',
-        'mainText': '$cycleDay',
+        'mainText': '$day',
         'subtitle': 'Low chance of pregnancy',
         'color': HomeTheme.red,
-        'progress': cycleDay / 5.0 * 0.25,
+        'progress': (day / avgPeriod) * 0.25,
         'phase': 'period',
       };
-    } else if (cycleDay >= 10 && cycleDay <= 16) {
-      final daysToOv = 14 - cycleDay;
+    }
+    if (withinFertile || isOvulation) {
+      int? dToOv;
+      if (_ovulationDate != null) {
+        dToOv = _ovulationDate!.difference(s).inDays;
+      }
       return {
-        'title': daysToOv == 0
+        'title': dToOv == 0
             ? 'Ovulation Day'
-            : daysToOv > 0
+            : (dToOv != null && dToOv > 0)
                 ? 'Ovulation in'
                 : 'Fertile Window',
-        'mainText': daysToOv == 0
+        'mainText': dToOv == 0
             ? 'Today'
-            : daysToOv > 0
-                ? '$daysToOv days'
-                : 'Day $cycleDay',
+            : (dToOv != null && dToOv > 0)
+                ? '${dToOv} days'
+                : 'Day $day',
         'subtitle': 'Higher chance of pregnancy',
         'color': HomeTheme.teal,
-        'progress': 0.35 + ((cycleDay - 10) / 6.0 * 0.15),
+        'progress': 0.35 + (progress * 0.15),
         'phase': 'fertile',
       };
-    } else {
+    }
+    if (daysUntilNext != null && daysUntilNext > 0 && daysUntilNext <= 7) {
       return {
-        'title': 'Cycle Day',
-        'mainText': '$cycleDay',
-        'subtitle': 'Follicular / Luteal phase',
+        'title': 'Days until period',
+        'mainText': '$daysUntilNext',
+        'subtitle': 'Predicted start',
         'color': HomeTheme.purple,
-        'progress': cycleDay / 28.0,
-        'phase': 'luteal',
+        'progress': (1.0).clamp(0.0, 1.0),
+        'phase': 'upcoming',
       };
     }
+    return {
+      'title': 'Cycle Day',
+      'mainText': '$day',
+      'subtitle': 'Follicular / Luteal phase',
+      'color': HomeTheme.purple,
+      'progress': progress,
+      'phase': 'luteal',
+    };
   }
 
   String _getWeekday(int weekday) =>
@@ -470,6 +517,78 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
       'December',
     ];
     return '${months[date.month - 1]} ${date.year}';
+  }
+
+  Future<void> _fetchCyclePredictionData() async {
+    if (_currentUser == null) return;
+    try {
+      final rows = await _supabase
+          .from('cycles')
+          .select()
+          .eq('user_id', _currentUser!.id)
+          .order('start_date', ascending: false);
+      final list = (rows as List)
+          .map((r) => _CycleRow.fromMap(r as Map<String, dynamic>))
+          .toList();
+      if (list.isNotEmpty) {
+        final anchor = list.first.startDate;
+        final lens = _deriveCycleLengths(list);
+        final filtered = _filterOutliers(lens);
+        final avgLen = filtered.isEmpty
+            ? list.first.cycleLength.toDouble()
+            : _weightedAvgCycleLength(filtered);
+        final avgPeriod =
+            list.map((e) => e.periodLength).fold<int>(0, (a, b) => a + b) /
+                list.length;
+        final nextPeriod = anchor.add(Duration(days: avgLen.round()));
+        final ovu = nextPeriod.subtract(const Duration(days: 14));
+        final fertStart = ovu.subtract(const Duration(days: 5));
+        final fertEnd = ovu.add(const Duration(days: 1));
+        if (mounted) {
+          setState(() {
+            _lastPeriodDate = anchor;
+            _avgCycleLength = avgLen;
+            _avgPeriodLength = avgPeriod.toDouble();
+            _nextPeriodDate = nextPeriod;
+            _ovulationDate = ovu;
+            _fertileStart = fertStart;
+            _fertileEnd = fertEnd;
+          });
+        }
+      }
+    } catch (_) {}
+  }
+
+  List<int> _deriveCycleLengths(List<_CycleRow> cycles) {
+    if (cycles.length < 2) return [];
+    final lengths = <int>[];
+    for (int i = 0; i < cycles.length - 1; i++) {
+      final diff =
+          cycles[i].startDate.difference(cycles[i + 1].startDate).inDays;
+      if (diff >= 15 && diff <= 60) {
+        lengths.add(diff);
+      }
+    }
+    return lengths;
+  }
+
+  List<int> _filterOutliers(List<int> lengths) {
+    if (lengths.length < 3) return lengths;
+    final sorted = List<int>.from(lengths)..sort();
+    final mid = sorted.length ~/ 2;
+    final median = sorted.length.isOdd
+        ? sorted[mid].toDouble()
+        : (sorted[mid - 1] + sorted[mid]) / 2.0;
+    return lengths.where((l) => l <= median * 2).toList();
+  }
+
+  double _weightedAvgCycleLength(List<int> lengths) {
+    if (lengths.isEmpty) return 28.0;
+    if (lengths.length == 1) return lengths[0].toDouble();
+    if (lengths.length == 2) {
+      return (lengths[0] * 2 + lengths[1] * 1) / 3.0;
+    }
+    return (lengths[0] * 3 + lengths[1] * 2 + lengths[2] * 1) / 6.0;
   }
 
   // ── GLUCOSE HELPERS ────────────────────────────────────────────────────────
@@ -503,10 +622,6 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
   }
 
   // ── GLUCOSE BOTTOM SHEET ───────────────────────────────────────────────────
-  // Opens a modal bottom sheet containing:
-  //   • reference range legend
-  //   • input + save button  →  writes to Firestore
-  //   • live list of last 5 readings from Firestore
 
   void _showGlucoseSheet() {
     showModalBottomSheet(
@@ -612,8 +727,6 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                   FadeTransition(opacity: cardFade, child: _buildSleepBanner()),
             ),
 
-            // ── Standalone Glucose Log section removed ────────────────────
-
             const SizedBox(height: 90),
           ],
         ),
@@ -624,7 +737,9 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
   // ── HEADER ─────────────────────────────────────────────────────────────────
 
   Widget _buildHeader() {
-    final displayName = _userName ?? _currentUser?.displayName ?? 'Beautiful';
+    final displayName = _userName ??
+        _currentUser?.userMetadata?['display_name'] as String? ??
+        'Beautiful';
 
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 4),
@@ -1218,7 +1333,6 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                       MaterialPageRoute(
                           builder: (_) => const SymptomTrackingPage())),
                 ),
-                // Glucose card → opens full bottom sheet with readings + add
                 _buildInsightCard(
                   imagePath: 'assets/glucose.png',
                   title: 'Glucose',
@@ -1409,10 +1523,26 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
   }
 }
 
+class _CycleRow {
+  final DateTime startDate;
+  final int cycleLength;
+  final int periodLength;
+  _CycleRow(
+      {required this.startDate,
+      required this.cycleLength,
+      required this.periodLength});
+  factory _CycleRow.fromMap(Map<String, dynamic> row) {
+    return _CycleRow(
+      startDate: DateTime.parse(row['start_date'] as String),
+      cycleLength: (row['cycle_length'] as num?)?.toInt() ?? 28,
+      periodLength: (row['period_length'] as num?)?.toInt() ?? 5,
+    );
+  }
+}
+
 // ══════════════════════════════════════════════════════════════════════════════
 // GLUCOSE BOTTOM SHEET
-// All glucose functionality — readings list + add new reading.
-// Saves to Firestore: users/{uid}/glucoseReadings
+// Migrated: Firestore → Supabase (table: glucose_readings)
 // ══════════════════════════════════════════════════════════════════════════════
 
 class _GlucoseBottomSheet extends StatefulWidget {
@@ -1432,14 +1562,53 @@ class _GlucoseBottomSheet extends StatefulWidget {
 
 class _GlucoseBottomSheetState extends State<_GlucoseBottomSheet> {
   final TextEditingController _ctrl = TextEditingController();
+  final _supabase = Supabase.instance.client;
   String? _errorText;
   bool _isSaving = false;
+
+  // Holds the live readings fetched from Supabase
+  List<Map<String, dynamic>> _readings = [];
+  bool _loadingReadings = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _fetchReadings();
+  }
 
   @override
   void dispose() {
     _ctrl.dispose();
     super.dispose();
   }
+
+  // ── Fetch last 5 readings from Supabase ────────────────────────────────────
+
+  Future<void> _fetchReadings() async {
+    if (widget.currentUser == null) {
+      setState(() => _loadingReadings = false);
+      return;
+    }
+    try {
+      final data = await _supabase
+          .from('glucose_readings')
+          .select()
+          .eq('user_id', widget.currentUser!.id)
+          .order('created_at', ascending: false)
+          .limit(5);
+
+      if (mounted) {
+        setState(() {
+          _readings = List<Map<String, dynamic>>.from(data as List);
+          _loadingReadings = false;
+        });
+      }
+    } catch (_) {
+      if (mounted) setState(() => _loadingReadings = false);
+    }
+  }
+
+  // ── Save new reading to Supabase ───────────────────────────────────────────
 
   Future<void> _saveReading() async {
     final raw = _ctrl.text.trim();
@@ -1464,19 +1633,18 @@ class _GlucoseBottomSheetState extends State<_GlucoseBottomSheet> {
     });
 
     try {
-      await FirebaseFirestore.instance
-          .collection('users')
-          .doc(widget.currentUser!.uid)
-          .collection('glucoseReadings')
-          .add({
-        'userId': widget.currentUser!.uid,
+      await _supabase.from('glucose_readings').insert({
+        'user_id': widget.currentUser!.id,
         'value': parsed,
         'unit': 'mg/dL',
-        'timestamp': FieldValue.serverTimestamp(),
-        'loggedAt': DateTime.now().toIso8601String(),
+        'created_at': DateTime.now().toUtc().toIso8601String(),
       });
 
       _ctrl.clear();
+
+      // Refresh readings list after saving
+      await _fetchReadings();
+
       setState(() => _isSaving = false);
 
       final status = widget.getGlucoseStatus(parsed);
@@ -1523,10 +1691,7 @@ class _GlucoseBottomSheetState extends State<_GlucoseBottomSheet> {
         color: Colors.white,
         borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
       ),
-      // Max height shrinks when keyboard appears so nothing overflows
-      constraints: BoxConstraints(
-        maxHeight: screenHeight * 0.92,
-      ),
+      constraints: BoxConstraints(maxHeight: screenHeight * 0.92),
       child: SingleChildScrollView(
         physics: const BouncingScrollPhysics(),
         padding: EdgeInsets.fromLTRB(20, 0, 20, 20 + bottomPadding),
@@ -1736,127 +1901,109 @@ class _GlucoseBottomSheetState extends State<_GlucoseBottomSheet> {
                       style: TextStyle(color: HomeTheme.textMuted)),
                 ),
               )
-            else
-              StreamBuilder<QuerySnapshot>(
-                stream: FirebaseFirestore.instance
-                    .collection('users')
-                    .doc(widget.currentUser!.uid)
-                    .collection('glucoseReadings')
-                    .orderBy('timestamp', descending: true)
-                    .limit(5)
-                    .snapshots(),
-                builder: (context, snapshot) {
-                  if (snapshot.connectionState == ConnectionState.waiting) {
-                    return const Padding(
-                      padding: EdgeInsets.symmetric(vertical: 24),
-                      child: Center(child: CircularProgressIndicator()),
-                    );
-                  }
-
-                  if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
-                    return Padding(
-                      padding: const EdgeInsets.symmetric(vertical: 24),
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Icon(Icons.water_drop_outlined,
-                              color:
-                                  HomeTheme.glucoseBlue.withValues(alpha: 0.3),
-                              size: 40),
-                          const SizedBox(height: 10),
-                          const Text(
-                            'No readings yet',
-                            style: TextStyle(
-                                fontWeight: FontWeight.bold,
-                                color: HomeTheme.textPrimary,
-                                fontSize: 15),
-                          ),
-                          const SizedBox(height: 4),
-                          const Text(
-                            'Enter a value above to log your first reading',
-                            style: TextStyle(
-                                color: HomeTheme.textMuted, fontSize: 12),
-                            textAlign: TextAlign.center,
-                          ),
-                        ],
-                      ),
-                    );
-                  }
-
-                  final readings = snapshot.data!.docs;
-                  // NeverScrollableScrollPhysics because parent
-                  // SingleChildScrollView handles scrolling
-                  return ListView.separated(
-                    shrinkWrap: true,
-                    physics: const NeverScrollableScrollPhysics(),
-                    itemCount: readings.length,
-                    separatorBuilder: (_, __) => const Divider(
-                      height: 1,
-                      indent: 58,
-                      endIndent: 0,
-                      color: Color(0xFFF0F4F8),
+            else if (_loadingReadings)
+              const Padding(
+                padding: EdgeInsets.symmetric(vertical: 24),
+                child: Center(child: CircularProgressIndicator()),
+              )
+            else if (_readings.isEmpty)
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 24),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(Icons.water_drop_outlined,
+                        color: HomeTheme.glucoseBlue.withValues(alpha: 0.3),
+                        size: 40),
+                    const SizedBox(height: 10),
+                    const Text(
+                      'No readings yet',
+                      style: TextStyle(
+                          fontWeight: FontWeight.bold,
+                          color: HomeTheme.textPrimary,
+                          fontSize: 15),
                     ),
-                    itemBuilder: (context, index) {
-                      final data =
-                          readings[index].data() as Map<String, dynamic>;
-                      final value = (data['value'] as num?)?.toDouble() ?? 0.0;
-                      final unit = data['unit'] as String? ?? 'mg/dL';
-                      final ts = data['timestamp'];
-                      DateTime? time;
-                      if (ts is Timestamp) time = ts.toDate();
+                    const SizedBox(height: 4),
+                    const Text(
+                      'Enter a value above to log your first reading',
+                      style:
+                          TextStyle(color: HomeTheme.textMuted, fontSize: 12),
+                      textAlign: TextAlign.center,
+                    ),
+                  ],
+                ),
+              )
+            else
+              ListView.separated(
+                shrinkWrap: true,
+                physics: const NeverScrollableScrollPhysics(),
+                itemCount: _readings.length,
+                separatorBuilder: (_, __) => const Divider(
+                  height: 1,
+                  indent: 58,
+                  endIndent: 0,
+                  color: Color(0xFFF0F4F8),
+                ),
+                itemBuilder: (context, index) {
+                  final data = _readings[index];
+                  final value = (data['value'] as num?)?.toDouble() ?? 0.0;
+                  final unit = data['unit'] as String? ?? 'mg/dL';
+                  final tsRaw = data['created_at'];
+                  DateTime? time;
+                  if (tsRaw != null) {
+                    time = DateTime.tryParse(tsRaw as String)?.toLocal();
+                  }
 
-                      final status = widget.getGlucoseStatus(value);
-                      final statusColor = status['color'] as Color;
-                      final statusLabel = status['label'] as String;
+                  final status = widget.getGlucoseStatus(value);
+                  final statusColor = status['color'] as Color;
+                  final statusLabel = status['label'] as String;
 
-                      return ListTile(
-                        contentPadding: const EdgeInsets.symmetric(
-                            horizontal: 4, vertical: 4),
-                        leading: Container(
-                          width: 44,
-                          height: 44,
-                          decoration: BoxDecoration(
-                            color: statusColor.withValues(alpha: 0.12),
-                            borderRadius: BorderRadius.circular(12),
-                          ),
-                          child: Center(
-                            child: Text(status['icon'] as String,
-                                style: const TextStyle(fontSize: 20)),
-                          ),
+                  return ListTile(
+                    contentPadding:
+                        const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
+                    leading: Container(
+                      width: 44,
+                      height: 44,
+                      decoration: BoxDecoration(
+                        color: statusColor.withValues(alpha: 0.12),
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: Center(
+                        child: Text(status['icon'] as String,
+                            style: const TextStyle(fontSize: 20)),
+                      ),
+                    ),
+                    title: Text(
+                      '$value $unit',
+                      style: const TextStyle(
+                        fontWeight: FontWeight.bold,
+                        fontSize: 16,
+                        color: HomeTheme.textPrimary,
+                      ),
+                    ),
+                    subtitle: time != null
+                        ? Text(
+                            widget.formatDateTime(time),
+                            style: const TextStyle(
+                                color: HomeTheme.textMuted, fontSize: 12),
+                          )
+                        : null,
+                    trailing: Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 10, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: statusColor.withValues(alpha: 0.12),
+                        borderRadius: BorderRadius.circular(20),
+                      ),
+                      child: Text(
+                        statusLabel,
+                        style: TextStyle(
+                          color: statusColor,
+                          fontSize: 11,
+                          fontWeight: FontWeight.bold,
                         ),
-                        title: Text(
-                          '$value $unit',
-                          style: const TextStyle(
-                            fontWeight: FontWeight.bold,
-                            fontSize: 16,
-                            color: HomeTheme.textPrimary,
-                          ),
-                        ),
-                        subtitle: time != null
-                            ? Text(
-                                widget.formatDateTime(time),
-                                style: const TextStyle(
-                                    color: HomeTheme.textMuted, fontSize: 12),
-                              )
-                            : null,
-                        trailing: Container(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 10, vertical: 4),
-                          decoration: BoxDecoration(
-                            color: statusColor.withValues(alpha: 0.12),
-                            borderRadius: BorderRadius.circular(20),
-                          ),
-                          child: Text(
-                            statusLabel,
-                            style: TextStyle(
-                              color: statusColor,
-                              fontSize: 11,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                        ),
-                      );
-                    },
+                      ),
+                    ),
                   );
                 },
               ),

@@ -1,5 +1,4 @@
-import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:firebase_auth/firebase_auth.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:flutter/material.dart';
 
 class AvatarCreationPage extends StatefulWidget {
@@ -47,12 +46,13 @@ class _AvatarCreationPageState extends State<AvatarCreationPage> {
           TextButton(
             onPressed: () async {
               final newAvatarPath = _getAvatarPath(_selectedAvatar);
-              final user = FirebaseAuth.instance.currentUser;
+              final supabase = Supabase.instance.client;
+              final user = supabase.auth.currentUser;
               if (user != null) {
-                await FirebaseFirestore.instance
-                    .collection('users')
-                    .doc(user.uid)
-                    .set({'avatarUrl': newAvatarPath}, SetOptions(merge: true));
+                await supabase
+                    .from('users')
+                    .update({'avatar_url': newAvatarPath}) // ✅ snake_case
+                    .eq('id', user.id);
               }
               Navigator.of(context).pop(newAvatarPath);
             },

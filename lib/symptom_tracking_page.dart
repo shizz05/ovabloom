@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:firebase_auth/firebase_auth.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:flutter/services.dart';
 
 // ── Pastel symptom palette ──────────────────────────────────────
@@ -24,7 +23,10 @@ class SymptomTrackingPage extends StatefulWidget {
 
 class _SymptomTrackingPageState extends State<SymptomTrackingPage>
     with TickerProviderStateMixin {
-  // ── Palette ─────────────────────────────────────────────────
+  // ── Supabase ─────────────────────────────────────────────────
+  final _supabase = Supabase.instance.client;
+
+  // ── Palette ──────────────────────────────────────────────────
   static const Color _bg = Color(0xFFFDF8F4);
   static const Color _textDark = Color(0xFF3C2F2F);
   static const Color _textMute = Color(0xFF9E8E8E);
@@ -35,54 +37,28 @@ class _SymptomTrackingPageState extends State<SymptomTrackingPage>
   static const Color _mint = Color(0xFF80CBB0);
   static const Color _butter = Color(0xFFE8C94F);
 
-  // ── State ────────────────────────────────────────────────────
-  final Map<String, bool> _cycleSymptoms = {
-    "Bleeding": false,
-    "Spotting": false,
-    "Cramps": false,
-    "Pelvic Discomfort": false,
-  };
-  final Map<String, bool> _energySymptoms = {
-    "Fatigue": false,
-    "Low Energy": false,
-    "Poor Sleep": false,
-    "Daytime Sleepiness": false,
-  };
-  double _energyLevel = 3.0;
+  // ── SYMPTOM STATE ─────────────────────────────────────────────
 
-  final Map<String, bool> _moodSymptoms = {
-    "Mood Swings": false,
-    "Anxiety": false,
-    "Irritability": false,
-    "Low Mood": false,
-    "Brain Fog": false,
-  };
-  String _moodRating = "Neutral";
+  // 1 · Ovulation Indicators
+  String _ovulationPain = 'None'; // None / Mild / Moderate / Severe
+  String _cervicalDischarge = 'Dry'; // Dry / Sticky / Creamy / Egg-white
 
-  final Map<String, bool> _hormonalSymptoms = {
-    "Acne Flare-up": false,
-    "Oily Skin": false,
-    "Hair Fall": false,
-    "Excess Sweating": false,
-  };
-  final Map<String, bool> _metabolicSymptoms = {
-    "Sugar Cravings": false,
-    "Extreme Hunger": false,
-    "Bloating": false,
-    "Energy Crash": false,
-  };
-  String _cravingIntensity = "None";
+  // 2 · Pain Symptoms
+  String _lowerAbdominalPain = 'None'; // None / Mild / Moderate / Severe
+  String _lowerBackPain = 'None'; // None / Mild / Moderate / Severe
 
-  final Map<String, bool> _digestiveSymptoms = {
-    "Constipation": false,
-    "Indigestion": false,
-    "Headache": false,
-    "Breast Tenderness": false,
-  };
+  // 3 · Mood & Energy
+  String _mood = 'Stable'; // Very Low / Low / Stable / Good / Elevated
+  String _energyLevel = 'Moderate'; // Very Low / Low / Moderate / High
+
+  // 4 · Digestive Symptoms
+  String _bloating = 'None'; // None / Mild / Moderate / Severe
+  String _digestiveIssue = 'No issue'; // No issue / Constipation / Loose motion
 
   bool _isLoading = false;
   bool _isSaving = false;
 
+  // ── Animations ────────────────────────────────────────────────
   late AnimationController _headerAnim;
   late Animation<double> _headerFade;
   late Animation<Offset> _headerSlide;
@@ -106,58 +82,56 @@ class _SymptomTrackingPageState extends State<SymptomTrackingPage>
     super.dispose();
   }
 
-  // ── Save ─────────────────────────────────────────────────────
+  // ════════════════════════════════════════════════════════════
+  //  SAVE — Supabase upsert
+  // ════════════════════════════════════════════════════════════
+
   Future<void> _saveLog() async {
-    final user = FirebaseAuth.instance.currentUser;
+    final user = _supabase.auth.currentUser;
     if (user == null) return;
+
     setState(() => _isSaving = true);
+
     try {
       final now = DateTime.now();
+
       final dateKey =
-          "${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}";
+          '${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}';
+
       final logData = {
-        "date": Timestamp.now(),
-        "cycle_pain": _cycleSymptoms.entries
-            .where((e) => e.value)
-            .map((e) => e.key)
-            .toList(),
-        "energy_sleep": _energySymptoms.entries
-            .where((e) => e.value)
-            .map((e) => e.key)
-            .toList(),
-        "energy_level": _energyLevel,
-        "mood_mental": _moodSymptoms.entries
-            .where((e) => e.value)
-            .map((e) => e.key)
-            .toList(),
-        "mood_rating": _moodRating,
-        "hormonal_skin": _hormonalSymptoms.entries
-            .where((e) => e.value)
-            .map((e) => e.key)
-            .toList(),
-        "metabolic_appetite": _metabolicSymptoms.entries
-            .where((e) => e.value)
-            .map((e) => e.key)
-            .toList(),
-        "craving_intensity": _cravingIntensity,
-        "digestive_physical": _digestiveSymptoms.entries
-            .where((e) => e.value)
-            .map((e) => e.key)
-            .toList(),
+        'user_id': user.id,
+        'date': dateKey,
+
+        // 1 · Ovulation Indicators
+        'ovulation_pain': _ovulationPain,
+        'cervical_discharge': _cervicalDischarge,
+
+        // 2 · Pain Symptoms
+        'lower_abdominal_pain': _lowerAbdominalPain,
+        'lower_back_pain': _lowerBackPain,
+
+        // 3 · Mood & Energy
+        'mood': _mood,
+        'energy_level': _energyLevel,
+
+        // 4 · Digestive Symptoms
+        'bloating': _bloating,
+        'digestive_issue': _digestiveIssue,
+
+        'created_at': now.toUtc().toIso8601String(),
       };
-      await FirebaseFirestore.instance
-          .collection('users')
-          .doc(user.uid)
-          .collection('daily_logs')
-          .doc(dateKey)
-          .set(logData, SetOptions(merge: true));
+
+      await _supabase
+          .from('daily_logs')
+          .upsert(logData, onConflict: 'user_id,date');
+
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: const Row(children: [
               Icon(Icons.favorite, color: Colors.white, size: 18),
               SizedBox(width: 8),
-              Text("Daily log saved! 🌸"),
+              Text('Daily log saved! 🌸'),
             ]),
             backgroundColor: _rose,
             behavior: SnackBarBehavior.floating,
@@ -171,7 +145,7 @@ class _SymptomTrackingPageState extends State<SymptomTrackingPage>
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-              content: Text("Error: $e"), backgroundColor: Colors.redAccent),
+              content: Text('Error: $e'), backgroundColor: Colors.redAccent),
         );
       }
     } finally {
@@ -179,6 +153,9 @@ class _SymptomTrackingPageState extends State<SymptomTrackingPage>
     }
   }
 
+  // ════════════════════════════════════════════════════════════
+  //  BUILD
+  // ════════════════════════════════════════════════════════════
   @override
   Widget build(BuildContext context) {
     final sw = MediaQuery.of(context).size.width;
@@ -219,89 +196,149 @@ class _SymptomTrackingPageState extends State<SymptomTrackingPage>
                   ),
                   const SizedBox(height: 28),
 
-                  // 1. Cycle & Body Pain
+                  // 1 · Ovulation Indicators
                   _buildSection(
                     color: _rose,
                     icon: Icons.water_drop_rounded,
-                    emoji: '🩸',
-                    title: 'Cycle & Body Pain',
-                    subtitle: 'Track your flow and physical discomfort',
-                    child: _buildChipGroup(_cycleSymptoms, _rose),
-                  ),
-                  const SizedBox(height: 16),
-
-                  // 2. Energy & Sleep
-                  _buildSection(
-                    color: _lavender,
-                    icon: Icons.nights_stay_rounded,
-                    emoji: '💤',
-                    title: 'Energy & Sleep',
-                    subtitle: 'How rested and energised do you feel?',
+                    emoji: '🌡️',
+                    title: 'Ovulation Indicators',
+                    subtitle: 'Track ovulation pain and cervical changes',
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        _buildChipGroup(_energySymptoms, _lavender),
+                        _buildSeveritySelector(
+                          label: 'Ovulation Pain',
+                          options: const ['None', 'Mild', 'Moderate', 'Severe'],
+                          selected: _ovulationPain,
+                          color: _rose,
+                          onChanged: (val) =>
+                              setState(() => _ovulationPain = val),
+                        ),
                         const SizedBox(height: 16),
-                        _buildEnergySlider(),
+                        _buildOptionSelector(
+                          label: 'Cervical Discharge Type',
+                          options: const [
+                            'Dry',
+                            'Sticky',
+                            'Creamy',
+                            'Egg-white'
+                          ],
+                          selected: _cervicalDischarge,
+                          color: _rose,
+                          onChanged: (val) =>
+                              setState(() => _cervicalDischarge = val),
+                        ),
                       ],
                     ),
                   ),
                   const SizedBox(height: 16),
 
-                  // 3. Mood & Mental State
+                  // 2 · Pain Symptoms
+                  _buildSection(
+                    color: _lavender,
+                    icon: Icons.nights_stay_rounded,
+                    emoji: '🩻',
+                    title: 'Pain Symptoms',
+                    subtitle: 'Lower abdominal and back discomfort',
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        _buildSeveritySelector(
+                          label: 'Lower Abdominal Pain',
+                          options: const ['None', 'Mild', 'Moderate', 'Severe'],
+                          selected: _lowerAbdominalPain,
+                          color: _lavender,
+                          onChanged: (val) =>
+                              setState(() => _lowerAbdominalPain = val),
+                        ),
+                        const SizedBox(height: 16),
+                        _buildSeveritySelector(
+                          label: 'Lower Back Pain',
+                          options: const ['None', 'Mild', 'Moderate', 'Severe'],
+                          selected: _lowerBackPain,
+                          color: _lavender,
+                          onChanged: (val) =>
+                              setState(() => _lowerBackPain = val),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+
+                  // 3 · Mood & Energy
                   _buildSection(
                     color: _sky,
                     icon: Icons.psychology_rounded,
                     emoji: '🧠',
-                    title: 'Mood & Mental State',
-                    subtitle: 'Your emotional and cognitive wellbeing',
-                    child: Column(
-                      children: [
-                        _buildChipGroup(_moodSymptoms, _sky),
-                        const SizedBox(height: 16),
-                        _buildMoodSelector(),
-                      ],
-                    ),
-                  ),
-                  const SizedBox(height: 16),
-
-                  // 4. Hormonal & Skin
-                  _buildSection(
-                    color: _peach,
-                    icon: Icons.auto_awesome_rounded,
-                    emoji: '✨',
-                    title: 'Hormonal & Skin',
-                    subtitle: 'Skin, hair and hormonal changes',
-                    child: _buildChipGroup(_hormonalSymptoms, _peach),
-                  ),
-                  const SizedBox(height: 16),
-
-                  // 5. Metabolic & Appetite
-                  _buildSection(
-                    color: _mint,
-                    icon: Icons.restaurant_rounded,
-                    emoji: '🍽️',
-                    title: 'Metabolic & Appetite',
-                    subtitle: 'Hunger, cravings and digestion',
+                    title: 'Mood & Energy',
+                    subtitle: 'Your emotional and energy state today',
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        _buildChipGroup(_metabolicSymptoms, _mint),
+                        _buildOptionSelector(
+                          label: 'Mood',
+                          options: const [
+                            'Very Low',
+                            'Low',
+                            'Stable',
+                            'Good',
+                            'Elevated'
+                          ],
+                          selected: _mood,
+                          color: _sky,
+                          onChanged: (val) => setState(() => _mood = val),
+                        ),
                         const SizedBox(height: 16),
-                        _buildCravingPicker(),
+                        _buildOptionSelector(
+                          label: 'Energy Level',
+                          options: const [
+                            'Very Low',
+                            'Low',
+                            'Moderate',
+                            'High'
+                          ],
+                          selected: _energyLevel,
+                          color: _sky,
+                          onChanged: (val) =>
+                              setState(() => _energyLevel = val),
+                        ),
                       ],
                     ),
                   ),
                   const SizedBox(height: 16),
 
-                  // 6. Digestive & Physical
+                  // 4 · Digestive Symptoms
                   _buildSection(
                     color: _butter,
                     icon: Icons.self_improvement_rounded,
                     emoji: '🧘',
-                    title: 'Digestive & Physical',
-                    subtitle: 'Body discomfort and digestive health',
-                    child: _buildChipGroup(_digestiveSymptoms, _butter),
+                    title: 'Digestive Symptoms',
+                    subtitle: 'Bloating and digestive health',
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        _buildSeveritySelector(
+                          label: 'Bloating',
+                          options: const ['None', 'Mild', 'Moderate', 'Severe'],
+                          selected: _bloating,
+                          color: _butter,
+                          onChanged: (val) => setState(() => _bloating = val),
+                        ),
+                        const SizedBox(height: 16),
+                        _buildOptionSelector(
+                          label: 'Digestive Issue',
+                          options: const [
+                            'No issue',
+                            'Constipation',
+                            'Loose motion'
+                          ],
+                          selected: _digestiveIssue,
+                          color: _butter,
+                          onChanged: (val) =>
+                              setState(() => _digestiveIssue = val),
+                        ),
+                      ],
+                    ),
                   ),
                   const SizedBox(height: 32),
 
@@ -314,10 +351,14 @@ class _SymptomTrackingPageState extends State<SymptomTrackingPage>
     );
   }
 
-  // ── Hero banner ──────────────────────────────────────────────
+  // ════════════════════════════════════════════════════════════
+  //  WIDGETS
+  // ════════════════════════════════════════════════════════════
+
+  // ── Hero banner ───────────────────────────────────────────────
   Widget _buildHeroBanner() {
     final now = DateTime.now();
-    final months = [
+    const months = [
       'Jan',
       'Feb',
       'Mar',
@@ -329,16 +370,16 @@ class _SymptomTrackingPageState extends State<SymptomTrackingPage>
       'Sep',
       'Oct',
       'Nov',
-      'Dec'
+      'Dec',
     ];
-    final days = [
+    const days = [
       'Monday',
       'Tuesday',
       'Wednesday',
       'Thursday',
       'Friday',
       'Saturday',
-      'Sunday'
+      'Sunday',
     ];
     final dayName = days[now.weekday - 1];
     final dateStr = '${now.day} ${months[now.month - 1]}, ${now.year}';
@@ -367,9 +408,9 @@ class _SymptomTrackingPageState extends State<SymptomTrackingPage>
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(
+                const Text(
                   'Good day! 🌸',
-                  style: const TextStyle(
+                  style: TextStyle(
                     color: _textDark,
                     fontSize: 20,
                     fontWeight: FontWeight.w800,
@@ -402,7 +443,6 @@ class _SymptomTrackingPageState extends State<SymptomTrackingPage>
             ),
           ),
           const SizedBox(width: 12),
-          // Decorative circle illustration
           Container(
             width: 72,
             height: 72,
@@ -419,7 +459,7 @@ class _SymptomTrackingPageState extends State<SymptomTrackingPage>
     );
   }
 
-  // ── Section card ─────────────────────────────────────────────
+  // ── Section card ───────────────────────────────────────────────
   Widget _buildSection({
     required Color color,
     required IconData icon,
@@ -443,7 +483,6 @@ class _SymptomTrackingPageState extends State<SymptomTrackingPage>
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // Section header
           Container(
             padding: const EdgeInsets.fromLTRB(18, 16, 18, 14),
             decoration: BoxDecoration(
@@ -469,26 +508,22 @@ class _SymptomTrackingPageState extends State<SymptomTrackingPage>
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text(
-                        title,
-                        style: const TextStyle(
-                          color: _textDark,
-                          fontSize: 15,
-                          fontWeight: FontWeight.w800,
-                        ),
-                      ),
+                      Text(title,
+                          style: const TextStyle(
+                            color: _textDark,
+                            fontSize: 15,
+                            fontWeight: FontWeight.w800,
+                          )),
                       const SizedBox(height: 2),
-                      Text(
-                        subtitle,
-                        style: const TextStyle(color: _textMute, fontSize: 12),
-                      ),
+                      Text(subtitle,
+                          style:
+                              const TextStyle(color: _textMute, fontSize: 12)),
                     ],
                   ),
                 ),
               ],
             ),
           ),
-          // Section content
           Padding(
             padding: const EdgeInsets.all(16),
             child: child,
@@ -498,224 +533,68 @@ class _SymptomTrackingPageState extends State<SymptomTrackingPage>
     );
   }
 
-  // ── Chip group ───────────────────────────────────────────────
-  Widget _buildChipGroup(Map<String, bool> symptoms, Color color) {
-    return Wrap(
-      spacing: 8,
-      runSpacing: 8,
-      children: symptoms.keys.map((key) {
-        final isSelected = symptoms[key]!;
-        return GestureDetector(
-          onTap: () {
-            HapticFeedback.selectionClick();
-            setState(() => symptoms[key] = !symptoms[key]!);
-          },
-          child: AnimatedContainer(
-            duration: const Duration(milliseconds: 200),
-            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-            decoration: BoxDecoration(
-              color:
-                  isSelected ? color.withOpacity(0.2) : const Color(0xFFF8F4F4),
-              borderRadius: BorderRadius.circular(20),
-              border: Border.all(
-                color: isSelected ? color : Colors.transparent,
-                width: 1.5,
-              ),
-            ),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                if (isSelected) ...[
-                  Icon(Icons.check_circle_rounded, size: 14, color: color),
-                  const SizedBox(width: 5),
-                ],
-                Text(
-                  key,
-                  style: TextStyle(
-                    color: isSelected ? color.withOpacity(0.85) : _textMute,
-                    fontWeight: isSelected ? FontWeight.w700 : FontWeight.w500,
-                    fontSize: 13,
-                  ),
-                ),
-              ],
-            ),
-          ),
-        );
-      }).toList(),
-    );
-  }
-
-  // ── Energy slider ────────────────────────────────────────────
-  Widget _buildEnergySlider() {
-    final labels = ['', '😴', '😪', '😐', '😊', '⚡'];
-    final level = _energyLevel.round();
+  // ── Severity selector (None / Mild / Moderate / Severe) ────────
+  // Uses the existing chip-group visual style, single-select.
+  Widget _buildSeveritySelector({
+    required String label,
+    required List<String> options,
+    required String selected,
+    required Color color,
+    required ValueChanged<String> onChanged,
+  }) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Row(
-          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-          children: [
-            const Text('Energy Level',
-                style: TextStyle(
-                    color: _textDark,
-                    fontWeight: FontWeight.w700,
-                    fontSize: 14)),
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-              decoration: BoxDecoration(
-                color: _lavender.withOpacity(0.18),
-                borderRadius: BorderRadius.circular(12),
-              ),
-              child: Text(
-                labels[level],
-                style: const TextStyle(fontSize: 18),
-              ),
-            ),
-          ],
-        ),
-        const SizedBox(height: 8),
-        SliderTheme(
-          data: SliderTheme.of(context).copyWith(
-            activeTrackColor: _lavender,
-            inactiveTrackColor: _lavender.withOpacity(0.2),
-            thumbColor: _lavender,
-            trackHeight: 5,
-            thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 10),
-            overlayColor: _lavender.withOpacity(0.2),
-            activeTickMarkColor: Colors.transparent,
-            inactiveTickMarkColor: Colors.transparent,
-            showValueIndicator: ShowValueIndicator.never,
-          ),
-          child: Slider(
-            value: _energyLevel,
-            min: 1,
-            max: 5,
-            divisions: 4,
-            onChanged: (val) {
-              HapticFeedback.selectionClick();
-              setState(() => _energyLevel = val);
-            },
+        Text(
+          label,
+          style: const TextStyle(
+            color: _textDark,
+            fontWeight: FontWeight.w700,
+            fontSize: 14,
           ),
         ),
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 4),
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: const [
-              Text('Low', style: TextStyle(color: _textMute, fontSize: 11)),
-              Text('High', style: TextStyle(color: _textMute, fontSize: 11)),
-            ],
-          ),
-        ),
-      ],
-    );
-  }
-
-  // ── Mood selector ────────────────────────────────────────────
-  Widget _buildMoodSelector() {
-    final moods = [
-      {'label': 'Sad', 'emoji': '😢', 'value': 'Sad'},
-      {'label': 'Neutral', 'emoji': '😐', 'value': 'Neutral'},
-      {'label': 'Happy', 'emoji': '😊', 'value': 'Happy'},
-    ];
-    return Row(
-      children: moods.map((m) {
-        final isSelected = _moodRating == m['value'];
-        return Expanded(
-          child: GestureDetector(
-            onTap: () {
-              HapticFeedback.selectionClick();
-              setState(() => _moodRating = m['value']!);
-            },
-            child: AnimatedContainer(
-              duration: const Duration(milliseconds: 200),
-              margin: EdgeInsets.only(right: m['value'] != 'Happy' ? 8 : 0),
-              padding: const EdgeInsets.symmetric(vertical: 12),
-              decoration: BoxDecoration(
-                color: isSelected
-                    ? _sky.withOpacity(0.22)
-                    : const Color(0xFFF8F4F4),
-                borderRadius: BorderRadius.circular(16),
-                border: Border.all(
-                  color: isSelected ? _sky : Colors.transparent,
-                  width: 1.5,
-                ),
-              ),
-              child: Column(
-                children: [
-                  Text(m['emoji']!, style: const TextStyle(fontSize: 26)),
-                  const SizedBox(height: 4),
-                  Text(
-                    m['label']!,
-                    style: TextStyle(
-                      color: isSelected ? _sky : _textMute,
-                      fontSize: 12,
-                      fontWeight:
-                          isSelected ? FontWeight.w700 : FontWeight.w500,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-        );
-      }).toList(),
-    );
-  }
-
-  // ── Craving picker ───────────────────────────────────────────
-  Widget _buildCravingPicker() {
-    final options = [
-      {'label': 'None', 'emoji': '🙅', 'value': 'None'},
-      {'label': 'Mild', 'emoji': '🤏', 'value': 'Mild'},
-      {'label': 'Strong', 'emoji': '🔥', 'value': 'Strong'},
-    ];
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        const Text('Craving Intensity',
-            style: TextStyle(
-                color: _textDark, fontWeight: FontWeight.w700, fontSize: 14)),
         const SizedBox(height: 10),
-        Row(
-          children: options.map((o) {
-            final isSelected = _cravingIntensity == o['value'];
-            return Expanded(
-              child: GestureDetector(
-                onTap: () {
-                  HapticFeedback.selectionClick();
-                  setState(() => _cravingIntensity = o['value']!);
-                },
-                child: AnimatedContainer(
-                  duration: const Duration(milliseconds: 200),
-                  margin:
-                      EdgeInsets.only(right: o['value'] != 'Strong' ? 8 : 0),
-                  padding: const EdgeInsets.symmetric(vertical: 10),
-                  decoration: BoxDecoration(
-                    color: isSelected
-                        ? _mint.withOpacity(0.22)
-                        : const Color(0xFFF8F4F4),
-                    borderRadius: BorderRadius.circular(14),
-                    border: Border.all(
-                      color: isSelected ? _mint : Colors.transparent,
-                      width: 1.5,
-                    ),
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: options.map((opt) {
+            final isSelected = selected == opt;
+            return GestureDetector(
+              onTap: () {
+                HapticFeedback.selectionClick();
+                onChanged(opt);
+              },
+              child: AnimatedContainer(
+                duration: const Duration(milliseconds: 200),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                decoration: BoxDecoration(
+                  color: isSelected
+                      ? color.withOpacity(0.2)
+                      : const Color(0xFFF8F4F4),
+                  borderRadius: BorderRadius.circular(20),
+                  border: Border.all(
+                    color: isSelected ? color : Colors.transparent,
+                    width: 1.5,
                   ),
-                  child: Column(
-                    children: [
-                      Text(o['emoji']!, style: const TextStyle(fontSize: 22)),
-                      const SizedBox(height: 4),
-                      Text(
-                        o['label']!,
-                        style: TextStyle(
-                          color: isSelected ? _mint : _textMute,
-                          fontSize: 12,
-                          fontWeight:
-                              isSelected ? FontWeight.w700 : FontWeight.w500,
-                        ),
-                      ),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (isSelected) ...[
+                      Icon(Icons.check_circle_rounded, size: 14, color: color),
+                      const SizedBox(width: 5),
                     ],
-                  ),
+                    Text(
+                      opt,
+                      style: TextStyle(
+                        color: isSelected ? color.withOpacity(0.85) : _textMute,
+                        fontWeight:
+                            isSelected ? FontWeight.w700 : FontWeight.w500,
+                        fontSize: 13,
+                      ),
+                    ),
+                  ],
                 ),
               ),
             );
@@ -725,7 +604,25 @@ class _SymptomTrackingPageState extends State<SymptomTrackingPage>
     );
   }
 
-  // ── Save button ──────────────────────────────────────────────
+  // ── Option selector (generic descriptive options) ──────────────
+  // Same visual as severity selector — reused for discharge, mood, etc.
+  Widget _buildOptionSelector({
+    required String label,
+    required List<String> options,
+    required String selected,
+    required Color color,
+    required ValueChanged<String> onChanged,
+  }) {
+    return _buildSeveritySelector(
+      label: label,
+      options: options,
+      selected: selected,
+      color: color,
+      onChanged: onChanged,
+    );
+  }
+
+  // ── Save button ────────────────────────────────────────────────
   Widget _buildSaveButton() {
     return GestureDetector(
       onTap: _isSaving ? null : _saveLog,
